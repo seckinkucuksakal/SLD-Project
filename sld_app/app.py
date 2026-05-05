@@ -664,7 +664,14 @@ def run() -> None:
         z = zoom
         rh = max(2.0, 2.8 * min(z, 1.3))
         ow = max(1, int(round(1.3 * min(z, 1.1))))
-        for si in range(len(shapes)):
+        show_for: set[int] = set(selected_shape_indices)
+        if connecting_from is not None:
+            show_for.update(range(len(shapes)))
+        if not show_for:
+            return
+        for si in show_for:
+            if si < 0 or si >= len(shapes):
+                continue
             for _role, _idx, wx, wy in iter_handles(si):
                 sx = (wx - scroll_x) * z
                 sy = (wy - scroll_y) * z
@@ -1140,14 +1147,20 @@ def run() -> None:
 
     def cancel_palette_escape(_event: tk.Event | None = None) -> None:
         nonlocal palette_drag_kind, connecting_from, preview_wx, preview_wy
-        if palette_drag_kind is None and connecting_from is None:
-            return
-        root.unbind_all("<B1-Motion>")
-        root.unbind_all("<ButtonRelease-1>")
-        palette_drag_kind = None
-        connecting_from = None
-        preview_wx = preview_wy = None
-        hide_ghost()
+        nonlocal selected_shape_indices, selected_edge_id, marquee_active
+        selected_shape_indices = set()
+        selected_edge_id = None
+        marquee_active = False
+
+        had_drag = palette_drag_kind is not None
+        had_conn = connecting_from is not None
+        if had_drag or had_conn:
+            root.unbind_all("<B1-Motion>")
+            root.unbind_all("<ButtonRelease-1>")
+            palette_drag_kind = None
+            connecting_from = None
+            preview_wx = preview_wy = None
+            hide_ghost()
         redraw()
 
     def make_palette_tile(title: str, subtitle: str, hint: str, kind: str, draw_fn) -> None:
