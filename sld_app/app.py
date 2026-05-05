@@ -41,12 +41,20 @@ def run() -> None:
     drag_off_x = 0.0
     drag_off_y = 0.0
     shape_drag_ortho_anchor: tuple[float, float] | None = None
+    shape_group_origin: dict[int, tuple[float, float]] | None = None
     pan_anchor: tuple[int, int, float, float] | None = None
 
     ortho_mode = False
     palette_drag_kind: str | None = None
     ghost_win: tk.Toplevel | None = None
     shapes_menu_open = False
+
+    selected_shape_indices: set[int] = set()
+    marquee_active = False
+    marquee_ax = 0
+    marquee_ay = 0
+    marquee_cur_x = 0
+    marquee_cur_y = 0
 
     root = tk.Tk()
     root.title("SLD App")
@@ -279,6 +287,86 @@ def run() -> None:
             return None
         return min_x, min_y, max_x, max_y
 
+    def shape_bbox_world(si: int) -> tuple[float, float, float, float]:
+        s = shapes[si]
+        k = str(s["kind"])
+        cx = float(s["cx"])
+        cy = float(s["cy"])
+        if k == "square":
+            h = float(s["half"])
+            return cx - h, cy - h, cx + h, cy + h
+        if k == "rect":
+            hw = float(s["hw"])
+            hh = float(s["hh"])
+            return cx - hw, cy - hh, cx + hw, cy + hh
+        xs = [p[0] for p in geometry.tri_vertices(s)]
+        ys = [p[1] for p in geometry.tri_vertices(s)]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def rects_overlap_world(
+        ax0: float,
+        ay0: float,
+        ax1: float,
+        ay1: float,
+        bx0: float,
+        by0: float,
+        bx1: float,
+        by1: float,
+    ) -> bool:
+        return not (ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0)
+
+    def shapes_in_marquee_world(wx0: float, wy0: float, wx1: float, wy1: float) -> set[int]:
+        mx0, mx1 = min(wx0, wx1), max(wx0, wx1)
+        my0, my1 = min(wy0, wy1), max(wy0, wy1)
+        out: set[int] = set()
+        for si in range(len(shapes)):
+            bx0, by0, bx1, by1 = shape_bbox_world(si)
+            if rects_overlap_world(mx0, my0, mx1, my1, bx0, by0, bx1, by1):
+                out.add(si)
+        return out
+
+    def delete_selected_shapes() -> None:
+        nonlocal shapes, edges, next_edge_id, selected_edge_id
+        nonlocal selected_shape_indices
+        if not selected_shape_indices:
+            return
+        keep_old = set(selected_shape_indices)
+        shapes = [s for i, s in enumerate(shapes) if i not in selected_shape_indices]
+
+        def remap(si: int) -> int:
+            c = 0
+            for i in range(si):
+                if i not in keep_old:
+                    c += 1
+            return c
+
+        def remap_handle(h: tuple[int, str, int]) -> tuple[int, str, int] | None:
+            si, role, idx = h
+            if si in keep_old:
+                return None
+            return remap(si), role, idx
+
+        new_edges: list[dict[str, float | int | tuple[int, int]]] = []
+        max_id = 0
+        for e in edges:
+            a = e["a"]
+            b = e["b"]
+            assert isinstance(a, tuple) and isinstance(b, tuple)
+            na = remap_handle(a)
+            nb = remap_handle(b)
+            if na is None or nb is None:
+                continue
+            ne = dict(e)
+            ne["a"] = na
+            ne["b"] = nb
+            new_edges.append(ne)
+            max_id = max(max_id, int(e["id"]))
+        edges = new_edges
+        next_edge_id = max(next_edge_id, max_id + 1)
+        selected_edge_id = None
+        selected_shape_indices = set()
+        redraw()
+
     def iter_handles(si: int) -> list[tuple[str, int, float, float]]:
         """Her öğe: role ('corner'|'mid'), index, wx, wy."""
         s = shapes[si]
@@ -458,10 +546,13 @@ def run() -> None:
     def outline_w() -> int:
         return max(1, int(round(2 * zoom / max(zoom, 0.25))))
 
-    def draw_shape_ui(s: dict[str, float | str]) -> None:
+    def draw_shape_ui(s: dict[str, float | str], si: int) -> None:
         z = zoom
         k = str(s["kind"])
         ox = outline_w()
+        sel = si in selected_shape_indices
+        outline_col = C.SELECTION_OUTLINE if sel else C.OUTLINE
+        ow = ox + (1 if sel else 0)
         if k == "square":
             bx = (float(s["cx"]) - scroll_x) * z
             by = (float(s["cy"]) - scroll_y) * z
@@ -472,8 +563,8 @@ def run() -> None:
                 bx + hs,
                 by + hs,
                 fill=C.COL_SQUARE,
-                outline=C.OUTLINE,
-                width=ox,
+                outline=outline_col,
+                width=ow,
             )
         elif k == "rect":
             bx = (float(s["cx"]) - scroll_x) * z
@@ -486,15 +577,52 @@ def run() -> None:
                 bx + hw,
                 by + hh,
                 fill=C.COL_RECT,
-                outline=C.OUTLINE,
-                width=ox,
+                outline=outline_col,
+                width=ow,
             )
         else:
             pts: list[float] = []
             for px, py in geometry.tri_vertices(s):
                 pts.append((px - scroll_x) * z)
                 pts.append((py - scroll_y) * z)
-            canvas.create_polygon(*pts, fill=C.COL_TRI, outline=C.OUTLINE, width=ox)
+            canvas.create_polygon(*pts, fill=C.COL_TRI, outline=outline_col, width=ow)
+
+    def draw_selection_boxes() -> None:
+        z = zoom
+        dash_len = max(3, int(round(4 * min(z, 1.2))))
+        gap = max(2, int(round(3 * min(z, 1.2))))
+        for si in selected_shape_indices:
+            bx0, by0, bx1, by1 = shape_bbox_world(si)
+            sx0 = (bx0 - scroll_x) * z
+            sy0 = (by0 - scroll_y) * z
+            sx1 = (bx1 - scroll_x) * z
+            sy1 = (by1 - scroll_y) * z
+            canvas.create_rectangle(
+                sx0,
+                sy0,
+                sx1,
+                sy1,
+                outline=C.SELECTION_OUTLINE,
+                width=max(1, int(round(1.5 * min(z, 1.5)))),
+                dash=(dash_len, gap),
+            )
+
+    def draw_marquee_rect() -> None:
+        if not marquee_active:
+            return
+        x0 = min(marquee_ax, marquee_cur_x)
+        y0 = min(marquee_ay, marquee_cur_y)
+        x1 = max(marquee_ax, marquee_cur_x)
+        y1 = max(marquee_ay, marquee_cur_y)
+        canvas.create_rectangle(
+            x0,
+            y0,
+            x1,
+            y1,
+            outline=C.MARQUEE_COLOR,
+            width=1,
+            dash=(5, 4),
+        )
 
     def draw_edges_layer() -> None:
         z = zoom
@@ -603,10 +731,13 @@ def run() -> None:
         draw_edges_layer()
 
         for si, s in enumerate(shapes):
-            draw_shape_ui(s)
+            draw_shape_ui(s, si)
+
+        draw_selection_boxes()
 
         draw_handles_layer()
         draw_preview_connector()
+        draw_marquee_rect()
 
     def on_resize(_event: tk.Event | None = None) -> None:
         redraw()
@@ -678,30 +809,6 @@ def run() -> None:
 
     line_menu: tk.Menu | None = None
 
-    def set_edge_ortho_horizontal(eid: int) -> None:
-        for e in edges:
-            if int(e["id"]) != eid:
-                continue
-            mx, my, nx, ny, _, _ = edge_world_coords(e)
-            ny = my
-            e["kind"] = "line"
-            e["cx"] = (mx + nx) / 2.0
-            e["cy"] = (my + ny) / 2.0
-            break
-        redraw()
-
-    def set_edge_ortho_vertical(eid: int) -> None:
-        for e in edges:
-            if int(e["id"]) != eid:
-                continue
-            mx, my, nx, ny, _, _ = edge_world_coords(e)
-            nx = mx
-            e["kind"] = "line"
-            e["cx"] = (mx + nx) / 2.0
-            e["cy"] = (my + ny) / 2.0
-            break
-        redraw()
-
     def set_edge_line(eid: int) -> None:
         for e in edges:
             if int(e["id"]) == eid:
@@ -741,9 +848,6 @@ def run() -> None:
         line_menu = tk.Menu(canvas, tearoff=0)
         line_menu.add_command(label="Düz çizgi", command=lambda: set_edge_line(eid))
         line_menu.add_command(label="Yay (arc)", command=lambda: set_edge_arc(eid))
-        line_menu.add_separator()
-        line_menu.add_command(label="ORTHO: yatay (──)", command=lambda: set_edge_ortho_horizontal(eid))
-        line_menu.add_command(label="ORTHO: dikey (│)", command=lambda: set_edge_ortho_vertical(eid))
         try:
             line_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -773,8 +877,10 @@ def run() -> None:
         nonlocal connecting_from, preview_wx, preview_wy
         nonlocal selected_edge_id, dragging_arc_edge_id
         nonlocal next_edge_id
-        nonlocal shape_drag_ortho_anchor
+        nonlocal shape_drag_ortho_anchor, shape_group_origin
         nonlocal arc_drag_base_cx, arc_drag_base_cy, arc_drag_ptr_x, arc_drag_ptr_y
+        nonlocal selected_shape_indices, marquee_active
+        nonlocal marquee_ax, marquee_ay, marquee_cur_x, marquee_cur_y
         close_shapes_menu()
         if palette_drag_kind is not None:
             return
@@ -793,16 +899,19 @@ def run() -> None:
                     arc_drag_ptr_y = wy
                     selected_edge_id = aid
                     break
+            selected_shape_indices = set()
             return
 
         eid_hit = hit_edge(event.x, event.y)
         if eid_hit is not None:
             selected_edge_id = eid_hit
+            selected_shape_indices = set()
             redraw()
             return
 
         hh = handle_hit_world(*screen_to_world(event.x, event.y))
         if hh is not None:
+            selected_shape_indices = set()
             si, role, idx = hh
             if connecting_from is None:
                 connecting_from = (si, role, idx)
@@ -837,8 +946,22 @@ def run() -> None:
         if idx_shape is not None:
             connecting_from = None
             preview_wx = preview_wy = None
-            dragging_shape_idx = idx_shape
+            if event.state & 0x1:
+                if idx_shape in selected_shape_indices:
+                    selected_shape_indices.discard(idx_shape)
+                else:
+                    selected_shape_indices.add(idx_shape)
+                selected_edge_id = None
+                redraw()
+                return
             wx, wy = screen_to_world(event.x, event.y)
+            if idx_shape in selected_shape_indices and len(selected_shape_indices) > 1:
+                shape_group_origin = {i: (float(shapes[i]["cx"]), float(shapes[i]["cy"])) for i in selected_shape_indices}
+            else:
+                selected_shape_indices = {idx_shape}
+                shape_group_origin = None
+            selected_edge_id = None
+            dragging_shape_idx = idx_shape
             drag_off_x = wx - float(shapes[idx_shape]["cx"])
             drag_off_y = wy - float(shapes[idx_shape]["cy"])
             shape_drag_ortho_anchor = (
@@ -851,12 +974,26 @@ def run() -> None:
         connecting_from = None
         preview_wx = preview_wy = None
         selected_edge_id = None
+        marquee_active = True
+        marquee_ax = event.x
+        marquee_ay = event.y
+        marquee_cur_x = event.x
+        marquee_cur_y = event.y
+        if not (event.state & 0x1):
+            selected_shape_indices = set()
         redraw()
 
     def on_canvas_left_motion(event: tk.Event) -> None:
         nonlocal dragging_shape_idx, preview_wx, preview_wy
         nonlocal dragging_arc_edge_id
         nonlocal arc_drag_base_cx, arc_drag_base_cy, arc_drag_ptr_x, arc_drag_ptr_y
+        nonlocal marquee_cur_x, marquee_cur_y
+        nonlocal shape_group_origin
+        if marquee_active:
+            marquee_cur_x = event.x
+            marquee_cur_y = event.y
+            redraw()
+            return
         if dragging_arc_edge_id is not None:
             wx, wy = screen_to_world(event.x, event.y)
             dwx = wx - arc_drag_ptr_x
@@ -883,23 +1020,47 @@ def run() -> None:
         if dragging_shape_idx is None:
             return
         wx, wy = screen_to_world(event.x, event.y)
-        i = dragging_shape_idx
         tcx = wx - drag_off_x
         tcy = wy - drag_off_y
-        if ortho_mode and shape_drag_ortho_anchor is not None:
-            tcx, tcy = ortho_snap(
-                shape_drag_ortho_anchor[0], shape_drag_ortho_anchor[1], tcx, tcy
-            )
-        shapes[i]["cx"] = tcx
-        shapes[i]["cy"] = tcy
+        i = dragging_shape_idx
+        if shape_group_origin is not None:
+            dx = tcx - float(shapes[i]["cx"])
+            dy = tcy - float(shapes[i]["cy"])
+            if ortho_mode and shape_drag_ortho_anchor is not None:
+                adx, ady = ortho_snap(0.0, 0.0, dx, dy)
+                dx, dy = adx, ady
+            for sj, (ox, oy) in shape_group_origin.items():
+                shapes[sj]["cx"] = ox + dx
+                shapes[sj]["cy"] = oy + dy
+        else:
+            if ortho_mode and shape_drag_ortho_anchor is not None:
+                tcx, tcy = ortho_snap(
+                    shape_drag_ortho_anchor[0], shape_drag_ortho_anchor[1], tcx, tcy
+                )
+            shapes[i]["cx"] = tcx
+            shapes[i]["cy"] = tcy
         redraw()
 
     def on_canvas_left_up(_event: tk.Event | None = None) -> None:
         nonlocal dragging_shape_idx, dragging_arc_edge_id, shape_drag_ortho_anchor
+        nonlocal marquee_active, selected_shape_indices, selected_edge_id
+        nonlocal shape_group_origin
+        if marquee_active:
+            marquee_active = False
+            wx0, wy0 = screen_to_world(marquee_ax, marquee_ay)
+            wx1, wy1 = screen_to_world(marquee_cur_x, marquee_cur_y)
+            selected_shape_indices = shapes_in_marquee_world(wx0, wy0, wx1, wy1)
+            selected_edge_id = None
+            redraw()
+            return
         dragging_shape_idx = None
         dragging_arc_edge_id = None
         shape_drag_ortho_anchor = None
+        shape_group_origin = None
         canvas.config(cursor="crosshair")
+
+    def on_delete_key(_event: tk.Event | None = None) -> None:
+        delete_selected_shapes()
 
     def on_canvas_right(event: tk.Event) -> None:
         nonlocal selected_edge_id
@@ -939,7 +1100,7 @@ def run() -> None:
     def pan_end(_event: tk.Event | None = None) -> None:
         nonlocal pan_anchor
         pan_anchor = None
-        canvas.config(cursor="crosshair" if dragging_shape_idx is None else "hand2")
+        canvas.config(cursor="crosshair")
 
     def on_wheel_win(event: tk.Event) -> str | None:
         shift = bool(event.state & 0x1)
@@ -1098,6 +1259,8 @@ def run() -> None:
         canvas.bind("<Button-5>", on_wheel_linux)
 
     root.bind("<Escape>", cancel_palette_escape)
+    root.bind("<Delete>", on_delete_key)
+    root.bind("<BackSpace>", on_delete_key)
     canvas.bind("<Enter>", lambda _e: canvas.focus_set())
 
     root.after_idle(on_resize)
