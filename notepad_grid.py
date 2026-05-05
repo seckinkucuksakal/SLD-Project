@@ -9,7 +9,8 @@ Etkileşim:
   Köşe ve kenar ortası tutamaçlarından birine tıkla, başka tutamağa tıkla → çizgi bağlar
   Esc → bağlantı önizlemesini iptal
   Çizgiye sol tık → seçili vurgu (turuncu)
-  Çizgiye sağ tık → Düz çizgi / Yay menüsü; yayda yay gövdesini sürükleyerek eğriyi ayarla
+  Çizgiye sağ tık → Düz çizgi / Yay / ORTHO yatay-dikey hizalama
+  Üst çubuk ORTHO → açıkken önizleme, şekil taşıma ve yay düzenleme yatay/dikey kısıtlı
   Yerleşik şekil dolgu alanında sol sürükle → şekli taşı
   Ctrl veya orta fare + sürükle → pan | Tekerlek → yakınlaştır | Shift/Ctrl + tekerlek → kaydır
   Üst çubukta Merkezle → görünümü ortalar
@@ -261,8 +262,10 @@ def main() -> None:
     preview_wx: float | None = None
     preview_wy: float | None = None
     dragging_arc_edge_id: int | None = None
-    drag_arc_off_x = 0.0
-    drag_arc_off_y = 0.0
+    arc_drag_base_cx = 0.0
+    arc_drag_base_cy = 0.0
+    arc_drag_ptr_x = 0.0
+    arc_drag_ptr_y = 0.0
 
     scroll_x = 0.0
     scroll_y = 0.0
@@ -274,8 +277,10 @@ def main() -> None:
     dragging_shape_idx: int | None = None
     drag_off_x = 0.0
     drag_off_y = 0.0
+    shape_drag_ortho_anchor: tuple[float, float] | None = None
     pan_anchor: tuple[int, int, float, float] | None = None
 
+    ortho_mode = False
     palette_drag_kind: str | None = None
     ghost_win: tk.Toplevel | None = None
     GHOST_WH = 72
@@ -342,6 +347,38 @@ def main() -> None:
         fg=muted,
         font=("Segoe UI", 9),
     ).pack(side=tk.LEFT, padx=(18, 0))
+
+    def toggle_ortho() -> None:
+        nonlocal ortho_mode
+        ortho_mode = not ortho_mode
+        _sync_ortho_btn()
+
+    ortho_btn = tk.Button(
+        topbar,
+        text="ORTHO",
+        command=toggle_ortho,
+        cursor="hand2",
+        relief=tk.FLAT,
+        bg="#ffffff",
+        fg=ink,
+        activebackground="#f1f5f9",
+        activeforeground=ink,
+        font=("Segoe UI", 9, "bold"),
+        bd=0,
+        padx=12,
+        pady=6,
+        highlightthickness=1,
+        highlightbackground=bar_bd,
+    )
+    ortho_btn.pack(side=tk.RIGHT, padx=(8, 0), pady=10)
+
+    def _sync_ortho_btn() -> None:
+        if ortho_mode:
+            ortho_btn.configure(bg="#dcfce7", fg="#166534", highlightbackground="#86efac")
+        else:
+            ortho_btn.configure(bg="#ffffff", fg=ink, highlightbackground=bar_bd)
+
+    _sync_ortho_btn()
 
     tk.Button(
         topbar,
@@ -536,7 +573,7 @@ def main() -> None:
         return out
 
     def handle_hit_world(wx: float, wy: float) -> tuple[int, str, int] | None:
-        r = 12.0 / zoom
+        r = 7.0 / zoom
         best: tuple[int, str, int] | None = None
         best_d = r + 1.0
         for si in range(len(shapes)):
@@ -648,6 +685,15 @@ def main() -> None:
     def screen_to_world(sx: int, sy: int) -> tuple[float, float]:
         return scroll_x + float(sx) / zoom, scroll_y + float(sy) / zoom
 
+    def ortho_snap(from_x: float, from_y: float, to_x: float, to_y: float) -> tuple[float, float]:
+        if not ortho_mode:
+            return to_x, to_y
+        dx = to_x - from_x
+        dy = to_y - from_y
+        if abs(dx) >= abs(dy):
+            return to_x, from_y
+        return from_x, to_y
+
     def outline_w() -> int:
         return max(1, int(round(2 * zoom / max(zoom, 0.25))))
 
@@ -727,7 +773,8 @@ def main() -> None:
 
     def draw_handles_layer() -> None:
         z = zoom
-        rh = max(3.0, 5.0 * min(z, 1.5))
+        rh = max(2.0, 2.8 * min(z, 1.3))
+        ow = max(1, int(round(1.3 * min(z, 1.1))))
         for si in range(len(shapes)):
             for _role, _idx, wx, wy in iter_handles(si):
                 sx = (wx - scroll_x) * z
@@ -739,7 +786,7 @@ def main() -> None:
                     sy + rh,
                     fill="#ffffff",
                     outline="#64748b",
-                    width=max(1, int(round(2 * min(z, 1.2)))),
+                    width=ow,
                 )
 
     def draw_preview_connector() -> None:
@@ -748,10 +795,11 @@ def main() -> None:
         z = zoom
         si, role, idx = connecting_from
         wx0, wy0 = edge_anchor_world(si, role, idx)
+        tx, ty = ortho_snap(wx0, wy0, preview_wx, preview_wy)
         sx0 = (wx0 - scroll_x) * z
         sy0 = (wy0 - scroll_y) * z
-        sx1 = (preview_wx - scroll_x) * z
-        sy1 = (preview_wy - scroll_y) * z
+        sx1 = (tx - scroll_x) * z
+        sy1 = (ty - scroll_y) * z
         canvas.create_line(
             sx0,
             sy0,
@@ -869,6 +917,30 @@ def main() -> None:
 
     line_menu: tk.Menu | None = None
 
+    def set_edge_ortho_horizontal(eid: int) -> None:
+        for e in edges:
+            if int(e["id"]) != eid:
+                continue
+            mx, my, nx, ny, _, _ = edge_world_coords(e)
+            ny = my
+            e["kind"] = "line"
+            e["cx"] = (mx + nx) / 2.0
+            e["cy"] = (my + ny) / 2.0
+            break
+        redraw()
+
+    def set_edge_ortho_vertical(eid: int) -> None:
+        for e in edges:
+            if int(e["id"]) != eid:
+                continue
+            mx, my, nx, ny, _, _ = edge_world_coords(e)
+            nx = mx
+            e["kind"] = "line"
+            e["cx"] = (mx + nx) / 2.0
+            e["cy"] = (my + ny) / 2.0
+            break
+        redraw()
+
     def set_edge_line(eid: int) -> None:
         for e in edges:
             if int(e["id"]) == eid:
@@ -908,6 +980,9 @@ def main() -> None:
         line_menu = tk.Menu(canvas, tearoff=0)
         line_menu.add_command(label="Düz çizgi", command=lambda: set_edge_line(eid))
         line_menu.add_command(label="Yay (arc)", command=lambda: set_edge_arc(eid))
+        line_menu.add_separator()
+        line_menu.add_command(label="ORTHO: yatay (──)", command=lambda: set_edge_ortho_horizontal(eid))
+        line_menu.add_command(label="ORTHO: dikey (│)", command=lambda: set_edge_ortho_vertical(eid))
         try:
             line_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -935,8 +1010,10 @@ def main() -> None:
     def on_canvas_left_down(event: tk.Event) -> None:
         nonlocal dragging_shape_idx, drag_off_x, drag_off_y
         nonlocal connecting_from, preview_wx, preview_wy
-        nonlocal selected_edge_id, dragging_arc_edge_id, drag_arc_off_x, drag_arc_off_y
+        nonlocal selected_edge_id, dragging_arc_edge_id
         nonlocal next_edge_id
+        nonlocal shape_drag_ortho_anchor
+        nonlocal arc_drag_base_cx, arc_drag_base_cy, arc_drag_ptr_x, arc_drag_ptr_y
         close_shapes_menu()
         if palette_drag_kind is not None:
             return
@@ -949,8 +1026,10 @@ def main() -> None:
             wx, wy = screen_to_world(event.x, event.y)
             for e in edges:
                 if int(e["id"]) == aid:
-                    drag_arc_off_x = wx - float(e["cx"])
-                    drag_arc_off_y = wy - float(e["cy"])
+                    arc_drag_base_cx = float(e["cx"])
+                    arc_drag_base_cy = float(e["cy"])
+                    arc_drag_ptr_x = wx
+                    arc_drag_ptr_y = wy
                     selected_edge_id = aid
                     break
             return
@@ -1001,6 +1080,10 @@ def main() -> None:
             wx, wy = screen_to_world(event.x, event.y)
             drag_off_x = wx - float(shapes[idx_shape]["cx"])
             drag_off_y = wy - float(shapes[idx_shape]["cy"])
+            shape_drag_ortho_anchor = (
+                float(shapes[idx_shape]["cx"]),
+                float(shapes[idx_shape]["cy"]),
+            )
             canvas.config(cursor="hand2")
             return
 
@@ -1012,31 +1095,49 @@ def main() -> None:
     def on_canvas_left_motion(event: tk.Event) -> None:
         nonlocal dragging_shape_idx, preview_wx, preview_wy
         nonlocal dragging_arc_edge_id
+        nonlocal arc_drag_base_cx, arc_drag_base_cy, arc_drag_ptr_x, arc_drag_ptr_y
         if dragging_arc_edge_id is not None:
             wx, wy = screen_to_world(event.x, event.y)
+            dwx = wx - arc_drag_ptr_x
+            dwy = wy - arc_drag_ptr_y
+            if ortho_mode:
+                if abs(dwx) >= abs(dwy):
+                    dwy = 0.0
+                else:
+                    dwx = 0.0
             for e in edges:
                 if int(e["id"]) == dragging_arc_edge_id:
-                    e["cx"] = wx - drag_arc_off_x
-                    e["cy"] = wy - drag_arc_off_y
+                    e["cx"] = arc_drag_base_cx + dwx
+                    e["cy"] = arc_drag_base_cy + dwy
                     break
             redraw()
             return
         if connecting_from is not None:
-            preview_wx, preview_wy = screen_to_world(event.x, event.y)
+            wx, wy = screen_to_world(event.x, event.y)
+            si, role, idx = connecting_from
+            ax, ay = edge_anchor_world(si, role, idx)
+            preview_wx, preview_wy = ortho_snap(ax, ay, wx, wy)
             redraw()
             return
         if dragging_shape_idx is None:
             return
         wx, wy = screen_to_world(event.x, event.y)
         i = dragging_shape_idx
-        shapes[i]["cx"] = wx - drag_off_x
-        shapes[i]["cy"] = wy - drag_off_y
+        tcx = wx - drag_off_x
+        tcy = wy - drag_off_y
+        if ortho_mode and shape_drag_ortho_anchor is not None:
+            tcx, tcy = ortho_snap(
+                shape_drag_ortho_anchor[0], shape_drag_ortho_anchor[1], tcx, tcy
+            )
+        shapes[i]["cx"] = tcx
+        shapes[i]["cy"] = tcy
         redraw()
 
     def on_canvas_left_up(_event: tk.Event | None = None) -> None:
-        nonlocal dragging_shape_idx, dragging_arc_edge_id
+        nonlocal dragging_shape_idx, dragging_arc_edge_id, shape_drag_ortho_anchor
         dragging_shape_idx = None
         dragging_arc_edge_id = None
+        shape_drag_ortho_anchor = None
         canvas.config(cursor="crosshair")
 
     def on_canvas_right(event: tk.Event) -> None:
@@ -1052,7 +1153,10 @@ def main() -> None:
         nonlocal preview_wx, preview_wy
         if connecting_from is None:
             return
-        preview_wx, preview_wy = screen_to_world(event.x, event.y)
+        wx, wy = screen_to_world(event.x, event.y)
+        si, role, idx = connecting_from
+        ax, ay = edge_anchor_world(si, role, idx)
+        preview_wx, preview_wy = ortho_snap(ax, ay, wx, wy)
         redraw()
 
     def pan_start(event: tk.Event) -> None:
