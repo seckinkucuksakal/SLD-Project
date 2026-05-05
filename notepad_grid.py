@@ -6,7 +6,7 @@ Tkinter standart kütüphanedir (pip gerekmez).
 - Windows: python.org kurulumunda Tk genelde hazırdır.
 - Linux: sudo apt install python3-tk
 
-Çalıştırma: python notepad_grid.py
+Çalıştırma: python notepad_grid.py  veya  python3 notepad_grid.py
 """
 
 from __future__ import annotations
