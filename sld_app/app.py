@@ -911,13 +911,6 @@ def run() -> None:
             selected_shape_indices = set()
             return
 
-        eid_hit = hit_edge(event.x, event.y)
-        if eid_hit is not None:
-            selected_edge_id = eid_hit
-            selected_shape_indices = set()
-            redraw()
-            return
-
         hh = handle_hit_world(*screen_to_world(event.x, event.y))
         if hh is not None:
             selected_shape_indices = set()
@@ -978,6 +971,13 @@ def run() -> None:
                 float(shapes[idx_shape]["cy"]),
             )
             canvas.config(cursor="hand2")
+            return
+
+        eid_hit = hit_edge(event.x, event.y)
+        if eid_hit is not None:
+            selected_edge_id = eid_hit
+            selected_shape_indices = set()
+            redraw()
             return
 
         connecting_from = None
