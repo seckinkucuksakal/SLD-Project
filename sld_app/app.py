@@ -22,6 +22,7 @@ def run() -> None:
     block_pad = C.BLOCK_PAD
 
     shapes: list[dict[str, float | str]] = []
+    next_shape_label_num = 1
     edges: list[dict[str, float | int | tuple[int, int]]] = []
     next_edge_id = 1
     selected_edge_id: int | None = None
@@ -70,7 +71,20 @@ def run() -> None:
     body = tk.Frame(root)
     body.pack(fill=tk.BOTH, expand=True)
 
-    topbar = tk.Frame(body, bg=bar_bg, highlightthickness=1, highlightbackground=bar_bd)
+    left_panel = tk.Frame(
+        body,
+        bg=C.PANEL_BG,
+        width=C.SIDE_PANEL_W,
+        highlightthickness=1,
+        highlightbackground=bar_bd,
+    )
+    left_panel.pack(side=tk.LEFT, fill=tk.Y)
+    left_panel.pack_propagate(False)
+
+    content_area = tk.Frame(body)
+    content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    topbar = tk.Frame(content_area, bg=bar_bg, highlightthickness=1, highlightbackground=bar_bd)
     topbar.pack(fill=tk.X)
 
     left_head = tk.Frame(topbar, bg=bar_bg)
@@ -167,8 +181,230 @@ def run() -> None:
         highlightbackground=bar_bd,
     ).pack(side=tk.RIGHT, padx=(8, 14), pady=10)
 
-    canvas_holder = tk.Frame(body)
+    canvas_holder = tk.Frame(content_area)
     canvas_holder.pack(fill=tk.BOTH, expand=True)
+
+    name_var = tk.StringVar(value="")
+    name_syncing = False
+
+    kind_labels_tr = {"square": "Kare", "rect": "Dikdörtgen", "triangle": "Üçgen"}
+
+    def shape_kind_label(kind: str) -> str:
+        return kind_labels_tr.get(kind, kind)
+
+    def shape_row_title(si: int, s: dict[str, float | str]) -> str:
+        raw = str(s.get("name", "")).strip()
+        if raw:
+            return raw
+        return f"Şekil {si + 1}"
+
+    def draw_list_preview(cv: tk.Canvas, kind: str) -> None:
+        cv.delete("all")
+        w = C.LIST_PREVIEW
+        cx = w // 2
+        cy = w // 2
+        ol = C.OUTLINE
+        ow = 2
+        if kind == "square":
+            s = 14
+            cv.create_rectangle(
+                cx - s,
+                cy - s,
+                cx + s,
+                cy + s,
+                fill=C.COL_SQUARE,
+                outline=ol,
+                width=ow,
+            )
+        elif kind == "rect":
+            cv.create_rectangle(
+                cx - 18,
+                cy - 9,
+                cx + 18,
+                cy + 9,
+                fill=C.COL_RECT,
+                outline=ol,
+                width=ow,
+            )
+        else:
+            cv.create_polygon(
+                cx,
+                cy - 16,
+                cx - 17,
+                cy + 13,
+                cx + 17,
+                cy + 13,
+                fill=C.COL_TRI,
+                outline=ol,
+                width=ow,
+            )
+
+    panel_pad = tk.Frame(left_panel, bg=C.PANEL_BG)
+    panel_pad.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    tk.Label(
+        panel_pad,
+        text="Seçili şekil — isim",
+        bg=C.PANEL_BG,
+        fg=muted,
+        font=("Segoe UI", 9),
+    ).pack(anchor="w")
+
+    name_entry = tk.Entry(
+        panel_pad,
+        textvariable=name_var,
+        font=("Segoe UI", 10),
+        state="disabled",
+        relief=tk.FLAT,
+        highlightthickness=1,
+        highlightbackground=bar_bd,
+        highlightcolor=C.SELECTION_OUTLINE,
+    )
+    name_entry.pack(fill=tk.X, pady=(4, 12))
+
+    tk.Label(
+        panel_pad,
+        text="Şekiller",
+        bg=C.PANEL_BG,
+        fg=ink,
+        font=("Segoe UI", 10, "bold"),
+    ).pack(anchor="w")
+
+    list_canvas = tk.Canvas(panel_pad, bg=C.PANEL_BG, highlightthickness=0)
+    list_scroll = tk.Scrollbar(panel_pad, orient=tk.VERTICAL, command=list_canvas.yview)
+    list_canvas.configure(yscrollcommand=list_scroll.set)
+    list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+    list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    list_inner = tk.Frame(list_canvas, bg=C.PANEL_BG)
+    list_inner_win = list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+
+    def _list_inner_configure(_event: tk.Event | None = None) -> None:
+        list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+
+    list_inner.bind("<Configure>", _list_inner_configure)
+
+    def _list_canvas_configure(event: tk.Event) -> None:
+        list_canvas.itemconfigure(list_inner_win, width=event.width)
+
+    list_canvas.bind("<Configure>", _list_canvas_configure)
+
+    def _on_list_mousewheel(event: tk.Event) -> None:
+        if sys.platform == "win32":
+            delta = int(-1 * (event.delta / 120))
+        else:
+            delta = -1 if event.num == 4 else 1
+        list_canvas.yview_scroll(delta, "units")
+
+    list_canvas.bind("<Enter>", lambda _e: list_canvas.focus_set())
+    list_canvas.bind("<MouseWheel>", _on_list_mousewheel)
+    list_canvas.bind("<Button-4>", _on_list_mousewheel)
+    list_canvas.bind("<Button-5>", _on_list_mousewheel)
+
+    def sync_name_field() -> None:
+        nonlocal name_syncing
+        name_syncing = True
+        try:
+            if len(selected_shape_indices) == 1:
+                si = next(iter(selected_shape_indices))
+                name_var.set(str(shapes[si].get("name", "")))
+                name_entry.configure(state="normal")
+            else:
+                name_var.set("")
+                name_entry.configure(state="disabled")
+        finally:
+            name_syncing = False
+
+    def on_name_changed(*_args: object) -> None:
+        nonlocal name_syncing
+        if name_syncing:
+            return
+        if len(selected_shape_indices) != 1:
+            return
+        si = next(iter(selected_shape_indices))
+        shapes[si]["name"] = str(name_var.get()).strip()
+        refresh_shape_list()
+
+    name_var.trace_add("write", on_name_changed)
+
+    def refresh_shape_list() -> None:
+        for w in list_inner.winfo_children():
+            w.destroy()
+        for si, s in enumerate(shapes):
+            k = str(s["kind"])
+            sel = si in selected_shape_indices
+            row_bg = "#dbeafe" if sel else C.PANEL_INNER
+            row_bd = C.SELECTION_OUTLINE if sel else C.PANEL_ACCENT
+
+            row = tk.Frame(
+                list_inner,
+                bg=row_bg,
+                highlightthickness=1,
+                highlightbackground=row_bd,
+                cursor="hand2",
+            )
+            row.pack(fill=tk.X, pady=(0, 6))
+
+            pv = tk.Canvas(
+                row,
+                width=C.LIST_PREVIEW,
+                height=C.LIST_PREVIEW,
+                bg=row_bg,
+                highlightthickness=0,
+                cursor="hand2",
+            )
+            pv.pack(side=tk.LEFT, padx=(8, 8), pady=8)
+            draw_list_preview(pv, k)
+
+            txt = tk.Frame(row, bg=row_bg)
+            txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=8, padx=(0, 8))
+
+            title = shape_row_title(si, s)
+            tk.Label(
+                txt,
+                text=title,
+                bg=row_bg,
+                fg=ink,
+                font=("Segoe UI", 10, "bold"),
+                anchor="w",
+            ).pack(anchor="w")
+            tk.Label(
+                txt,
+                text=shape_kind_label(k),
+                bg=row_bg,
+                fg=muted,
+                font=("Segoe UI", 8),
+                anchor="w",
+            ).pack(anchor="w")
+
+            def _click(_e: tk.Event, idx: int = si) -> None:
+                select_shape_from_list(idx)
+
+            row.bind("<Button-1>", _click)
+            pv.bind("<Button-1>", _click)
+            for child in txt.winfo_children():
+                child.bind("<Button-1>", _click)
+
+        list_canvas.update_idletasks()
+        bbox = list_canvas.bbox("all")
+        if bbox:
+            list_canvas.configure(scrollregion=bbox)
+
+    def select_shape_from_list(si: int) -> None:
+        nonlocal selected_shape_indices, selected_edge_id, connecting_from, preview_wx, preview_wy
+        if si < 0 or si >= len(shapes):
+            return
+        selected_shape_indices = {si}
+        selected_edge_id = None
+        connecting_from = None
+        preview_wx = preview_wy = None
+        sync_name_field()
+        refresh_shape_list()
+        redraw()
+
+    def selection_ui_sync() -> None:
+        sync_name_field()
+        refresh_shape_list()
 
     canvas = tk.Canvas(canvas_holder, highlightthickness=0, bg=bg, cursor="crosshair")
     canvas.pack(fill=tk.BOTH, expand=True)
@@ -197,12 +433,19 @@ def run() -> None:
         shapes_toggle.configure(text="Şekiller  ▼")
         hint_var.set("")
 
-    def make_shape(kind: str, cx: float, cy: float) -> dict[str, float | str]:
+    def make_shape(kind: str, cx: float, cy: float, name: str) -> dict[str, float | str]:
         if kind == "square":
             half = (cell - 2 * block_pad) / 2.0
-            return {"kind": "square", "cx": cx, "cy": cy, "half": half}
+            return {"kind": "square", "cx": cx, "cy": cy, "half": half, "name": name}
         if kind == "rect":
-            return {"kind": "rect", "cx": cx, "cy": cy, "hw": cell * 0.9, "hh": cell * 0.45}
+            return {
+                "kind": "rect",
+                "cx": cx,
+                "cy": cy,
+                "hw": cell * 0.9,
+                "hh": cell * 0.45,
+                "name": name,
+            }
         return {
             "kind": "triangle",
             "cx": cx,
@@ -210,6 +453,7 @@ def run() -> None:
             "tw": cell * 0.5,
             "bh": cell * 0.25,
             "ah": cell * 0.5,
+            "name": name,
         }
 
     def shape_contains(mx: float, my: float, s: dict[str, float | str]) -> bool:
@@ -365,6 +609,7 @@ def run() -> None:
         next_edge_id = max(next_edge_id, max_id + 1)
         selected_edge_id = None
         selected_shape_indices = set()
+        selection_ui_sync()
         redraw()
 
     def iter_handles(si: int) -> list[tuple[str, int, float, float]]:
@@ -794,7 +1039,7 @@ def run() -> None:
         root.bind_all("<ButtonRelease-1>", finish_palette_drop)
 
     def finish_palette_drop(_event: tk.Event | None = None) -> None:
-        nonlocal palette_drag_kind
+        nonlocal palette_drag_kind, next_shape_label_num
         if palette_drag_kind is None:
             return
         root.unbind_all("<B1-Motion>")
@@ -813,7 +1058,10 @@ def run() -> None:
             return
 
         wx, wy = screen_to_world(int(px), int(py))
-        shapes.append(make_shape(k, wx, wy))
+        label = f"Şekil {next_shape_label_num}"
+        next_shape_label_num += 1
+        shapes.append(make_shape(k, wx, wy, label))
+        refresh_shape_list()
         redraw()
 
     line_menu: tk.Menu | None = None
@@ -909,11 +1157,14 @@ def run() -> None:
                     selected_edge_id = aid
                     break
             selected_shape_indices = set()
+            selection_ui_sync()
+            redraw()
             return
 
         hh = handle_hit_world(*screen_to_world(event.x, event.y))
         if hh is not None:
             selected_shape_indices = set()
+            selection_ui_sync()
             si, role, idx = hh
             if connecting_from is None:
                 connecting_from = (si, role, idx)
@@ -954,6 +1205,7 @@ def run() -> None:
                 else:
                     selected_shape_indices.add(idx_shape)
                 selected_edge_id = None
+                selection_ui_sync()
                 redraw()
                 return
             wx, wy = screen_to_world(event.x, event.y)
@@ -970,6 +1222,7 @@ def run() -> None:
                 float(shapes[idx_shape]["cx"]),
                 float(shapes[idx_shape]["cy"]),
             )
+            selection_ui_sync()
             canvas.config(cursor="hand2")
             return
 
@@ -977,6 +1230,7 @@ def run() -> None:
         if eid_hit is not None:
             selected_edge_id = eid_hit
             selected_shape_indices = set()
+            selection_ui_sync()
             redraw()
             return
 
@@ -990,6 +1244,7 @@ def run() -> None:
         marquee_cur_y = event.y
         if not (event.state & 0x1):
             selected_shape_indices = set()
+            selection_ui_sync()
         redraw()
 
     def on_canvas_left_motion(event: tk.Event) -> None:
@@ -1060,6 +1315,7 @@ def run() -> None:
             wx1, wy1 = screen_to_world(marquee_cur_x, marquee_cur_y)
             selected_shape_indices = shapes_in_marquee_world(wx0, wy0, wx1, wy1)
             selected_edge_id = None
+            selection_ui_sync()
             redraw()
             return
         dragging_shape_idx = None
@@ -1153,6 +1409,7 @@ def run() -> None:
         selected_shape_indices = set()
         selected_edge_id = None
         marquee_active = False
+        selection_ui_sync()
 
         had_drag = palette_drag_kind is not None
         had_conn = connecting_from is not None
