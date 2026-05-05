@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Kareli not defteri görünümünde basit bir yazı penceresi.
+SLD App — düz kareli zemin üzerinde tek karelik bloğu hareket ettirme.
 
 Tkinter standart kütüphanedir (pip gerekmez).
 - Windows: python.org kurulumunda Tk genelde hazırdır.
 - Linux: sudo apt install python3-tk
 
 Çalıştırma: python notepad_grid.py  veya  python3 notepad_grid.py
+Ok tuşları veya WASD ile blok hücre hücre hareket eder.
 """
 
 from __future__ import annotations
 
 import sys
 import tkinter as tk
-import tkinter.font as tkfont
-from tkinter import scrolledtext
 
 
 def _windows_dpi_before_tk() -> None:
@@ -24,7 +23,6 @@ def _windows_dpi_before_tk() -> None:
     try:
         import ctypes
 
-        # Win 8.1+: iz başına monitör DPI
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except (AttributeError, OSError):
         try:
@@ -35,102 +33,108 @@ def _windows_dpi_before_tk() -> None:
             pass
 
 
-def _pick_ui_font(size: int) -> tuple[str, int]:
-    families = tkfont.families()
-    if sys.platform == "win32":
-        order = (
-            "Segoe UI",
-            "Georgia",
-            "Cambria",
-            "Calibri",
-            "Times New Roman",
-            "DejaVu Serif",
-            "Liberation Serif",
-        )
-    else:
-        order = (
-            "Georgia",
-            "DejaVu Serif",
-            "Liberation Serif",
-            "Noto Serif",
-            "Times New Roman",
-        )
-    for name in order:
-        if name in families:
-            return (name, size)
-    return ("TkTextFont", size)
-
-
-def draw_grid(canvas: tk.Canvas, cell: int, margin: int, color: str) -> None:
-    canvas.delete("grid")
-    w = int(canvas.winfo_width())
-    h = int(canvas.winfo_height())
-    if w <= 1 or h <= 1:
-        return
-    x0, y0 = margin, margin
-    x1, y1 = w - margin, h - margin
-    x = x0
-    while x <= x1:
-        canvas.create_line(x, y0, x, y1, fill=color, width=1, tags="grid")
-        x += cell
-    y = y0
-    while y <= y1:
-        canvas.create_line(x0, y, x1, y, fill=color, width=1, tags="grid")
-        y += cell
-
-
 def main() -> None:
     _windows_dpi_before_tk()
 
+    cell = 28
+    bg = "#f4f4f5"
+    grid_color = "#d4d4d8"
+    block_fill = "#3b82f6"
+    block_outline = "#1d4ed8"
+    block_pad = 3
+
     root = tk.Tk()
-    root.title("Kareli Not Defteri")
+    root.title("SLD App")
     root.geometry("920x640")
-    root.minsize(400, 300)
+    root.minsize(320, 240)
 
-    paper = "#fefce8"
-    grid_color = "#c8c4b8"
-    cell = 20
-    margin = 40
-
-    canvas = tk.Canvas(root, highlightthickness=0, bg=paper)
+    canvas = tk.Canvas(root, highlightthickness=0, bg=bg)
     canvas.pack(fill=tk.BOTH, expand=True)
 
-    font_spec = _pick_ui_font(13)
-    text_bg = "#fffef5"
-    text = scrolledtext.ScrolledText(
-        canvas,
-        wrap=tk.WORD,
-        font=font_spec,
-        bg=text_bg,
-        fg="#1c1917",
-        insertbackground="#1c1917",
-        relief=tk.FLAT,
-        borderwidth=0,
-        padx=14,
-        pady=14,
-        highlightthickness=1,
-        highlightbackground="#d6d3d1",
-        highlightcolor="#a8a29e",
-    )
+    # Grid boyutu ve blok konumu (hücre indeksleri)
+    cols = 1
+    rows = 1
+    bx = 0
+    by = 0
 
-    def place_text() -> None:
-        cw = canvas.winfo_width()
-        ch = canvas.winfo_height()
-        text.place_configure(
-            x=margin,
-            y=margin,
-            width=max(cw - 2 * margin, 100),
-            height=max(ch - 2 * margin, 100),
-        )
+    def clamp_pos() -> None:
+        nonlocal bx, by
+        bx = max(0, min(bx, cols - 1))
+        by = max(0, min(by, rows - 1))
 
-    def on_configure(_event: tk.Event | None = None) -> None:
-        draw_grid(canvas, cell, margin, grid_color)
-        place_text()
+    def redraw() -> None:
+        canvas.delete("all")
+        w = max(int(canvas.winfo_width()), 1)
+        h = max(int(canvas.winfo_height()), 1)
 
-    canvas.bind("<Configure>", on_configure)
-    root.after_idle(on_configure)
+        # Dikey çizgiler
+        x = 0
+        while x <= w:
+            canvas.create_line(x, 0, x, h, fill=grid_color, width=1)
+            x += cell
+        # Yatay çizgiler
+        y = 0
+        while y <= h:
+            canvas.create_line(0, y, w, y, fill=grid_color, width=1)
+            y += cell
 
-    text.focus_set()
+        x0 = bx * cell + block_pad
+        y0 = by * cell + block_pad
+        x1 = (bx + 1) * cell - block_pad
+        y1 = (by + 1) * cell - block_pad
+        if x1 > x0 and y1 > y0:
+            canvas.create_rectangle(
+                x0,
+                y0,
+                x1,
+                y1,
+                fill=block_fill,
+                outline=block_outline,
+                width=2,
+            )
+
+    def on_resize(_event: tk.Event | None = None) -> None:
+        nonlocal cols, rows
+        w = max(int(canvas.winfo_width()), 1)
+        h = max(int(canvas.winfo_height()), 1)
+        cols = max(1, w // cell)
+        rows = max(1, h // cell)
+        clamp_pos()
+        redraw()
+
+    def move(dx: int, dy: int) -> None:
+        nonlocal bx, by
+        bx += dx
+        by += dy
+        clamp_pos()
+        redraw()
+
+    def on_key(event: tk.Event) -> None:
+        keysym = event.keysym
+        # Ok tuşları
+        if keysym == "Up":
+            move(0, -1)
+        elif keysym == "Down":
+            move(0, 1)
+        elif keysym == "Left":
+            move(-1, 0)
+        elif keysym == "Right":
+            move(1, 0)
+        # WASD
+        elif keysym.lower() == "w":
+            move(0, -1)
+        elif keysym.lower() == "s":
+            move(0, 1)
+        elif keysym.lower() == "a":
+            move(-1, 0)
+        elif keysym.lower() == "d":
+            move(1, 0)
+
+    canvas.bind("<Configure>", on_resize)
+    root.bind("<Key>", on_key)
+
+    canvas.focus_set()
+    root.after_idle(on_resize)
     root.mainloop()
 
 
