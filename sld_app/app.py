@@ -426,6 +426,8 @@ def run() -> None:
         best: tuple[int, str, int] | None = None
         best_d = r + 1.0
         for si in range(len(shapes)):
+            if connecting_from is None and si not in selected_shape_indices:
+                continue
             for role, idx, hx, hy in iter_handles(si):
                 d = math.hypot(wx - hx, wy - hy)
                 if d < best_d and d <= r:
