@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-SLD App — kareli dünya; paletten şekil sürükleyip bırakma ve yerleşik şekilleri taşıma.
+SLD App — kareli dünya; şekiller, tutamaçlar ve şekiller arası bağlantı çizgileri.
 
 Tkinter standart kütüphanedir (pip gerekmez).
 
 Etkileşim:
-  Paletten şekle basılı tut → fare ucunda hayalet önizleme; tuval üzerinde bırak → yerleşir
-  Yerleşik şekil üzerinde sol sürükle → taşı
-  Ctrl veya orta/sağ + sürükle → pan
-  Fare tekerleği → yakınlaştır / uzaklaştır | Shift/Ctrl + tekerlek → kaydır
-  Üst çubukta «Şekiller» menüsü — basılı tutup tuval üzerine bırak
-  Üst çubukta «Merkezle» → tüm şekilleri görünüme ortalar
+  Şekiller menüsünden sürükleyip bırak → şekil eklenir
+  Köşe ve kenar ortası tutamaçlarından birine tıkla, başka tutamağa tıkla → çizgi bağlar
+  Esc → bağlantı önizlemesini iptal
+  Çizgiye sol tık → seçili vurgu (turuncu)
+  Çizgiye sağ tık → Düz çizgi / Yay menüsü; yayda yay gövdesini sürükleyerek eğriyi ayarla
+  Yerleşik şekil dolgu alanında sol sürükle → şekli taşı
+  Ctrl veya orta fare + sürükle → pan | Tekerlek → yakınlaştır | Shift/Ctrl + tekerlek → kaydır
+  Üst çubukta Merkezle → görünümü ortalar
 
 Çalıştırma: python notepad_grid.py
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 import math
 import sys
 import tkinter as tk
+from tkinter import Menu
 
 
 def _windows_dpi_before_tk() -> None:
@@ -73,6 +76,170 @@ def _tri_vertices(s: dict[str, float | str]) -> tuple[tuple[float, float], tuple
     )
 
 
+def _circle_through_three(
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    cx: float,
+    cy: float,
+) -> tuple[float, float, float] | None:
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return None
+    a2 = ax * ax + ay * ay
+    b2 = bx * bx + by * by
+    c2 = cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    r = math.hypot(ax - ux, ay - uy)
+    return ux, uy, r
+
+
+def _tk_angle_deg(ox: float, oy: float, px: float, py: float) -> float:
+    """Tk canvas ile uyumlu: 0 doğu, pozitif saat yönü (ekran, +y aşağı)."""
+    return math.degrees(math.atan2(-(py - oy), px - ox))
+
+
+def _arc_geometry(
+    mx: float,
+    my: float,
+    nx: float,
+    ny: float,
+    cx: float,
+    cy: float,
+) -> tuple[float, float, float, float, float] | None:
+    """ox, oy, r, start_deg (Tk), extent_deg (Tk)."""
+    circ = _circle_through_three(mx, my, nx, ny, cx, cy)
+    if circ is None:
+        return None
+    ox, oy, r = circ
+    am = _tk_angle_deg(ox, oy, mx, my)
+    an = _tk_angle_deg(ox, oy, nx, ny)
+    ac = _tk_angle_deg(ox, oy, cx, cy)
+
+    def norm360(a: float) -> float:
+        while a < 0:
+            a += 360.0
+        while a >= 360:
+            a -= 360.0
+        return a
+
+    def on_positive_sweep(start: float, extent: float, ap: float) -> bool:
+        if extent >= 0:
+            da = norm360(ap - start)
+            return da <= extent + 0.5 or extent >= 360 - 1e-6
+        da = norm360(start - ap)
+        return da <= -extent + 0.5
+
+    # İki yay adayı: kısa ve uzun
+    d_ccw = norm360(an - am)
+    if d_ccw <= 180:
+        ext_ccw = d_ccw
+        ext_cw = d_ccw - 360
+    else:
+        ext_ccw = d_ccw - 360
+        ext_cw = d_ccw
+
+    on_ccw = on_positive_sweep(am, ext_ccw, ac)
+    on_cw = on_positive_sweep(am, ext_cw, ac)
+
+    if on_ccw and not on_cw:
+        start, extent = am, ext_ccw
+    elif on_cw and not on_ccw:
+        start, extent = am, ext_cw
+    elif on_ccw and on_cw:
+        start, extent = am, ext_ccw
+    else:
+        start, extent = am, ext_ccw if abs(ext_ccw) <= abs(ext_cw) else ext_cw
+
+    return ox, oy, r, start, extent
+
+
+def _arc_canvas_params(
+    mx: float,
+    my: float,
+    nx: float,
+    ny: float,
+    cx: float,
+    cy: float,
+    scroll_x: float,
+    scroll_y: float,
+    zoom: float,
+) -> tuple[float, float, float, float, float, float] | None:
+    g = _arc_geometry(mx, my, nx, ny, cx, cy)
+    if g is None:
+        return None
+    ox, oy, r, start, extent = g
+    x0 = (ox - r - scroll_x) * zoom
+    y0 = (oy - r - scroll_y) * zoom
+    x1 = (ox + r - scroll_x) * zoom
+    y1 = (oy + r - scroll_y) * zoom
+    return x0, y0, x1, y1, start, extent
+
+
+def _dist_point_segment(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+    abx = bx - ax
+    aby = by - ay
+    apx = px - ax
+    apy = py - ay
+    ab2 = abx * abx + aby * aby
+    if ab2 < 1e-18:
+        return math.hypot(apx, apy)
+    t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+    qx = ax + t * abx
+    qy = ay + t * aby
+    return math.hypot(px - qx, py - qy)
+
+
+def _point_on_arc_tk(
+    px: float,
+    py: float,
+    ox: float,
+    oy: float,
+    r: float,
+    start: float,
+    extent: float,
+) -> bool:
+    pr = math.hypot(px - ox, py - oy)
+    if abs(pr - r) > max(3.0, r * 0.05):
+        return False
+    ap = _tk_angle_deg(ox, oy, px, py)
+
+    def norm360(a: float) -> float:
+        while a < 0:
+            a += 360.0
+        while a >= 360:
+            a -= 360.0
+        return a
+
+    if extent >= 0:
+        da = norm360(ap - start)
+        return da <= extent + 1.0 or extent >= 359.5
+    da = norm360(start - ap)
+    return da <= -extent + 1.0
+
+
+def _dist_point_arc(
+    mx: float,
+    my: float,
+    nx: float,
+    ny: float,
+    cx: float,
+    cy: float,
+    px: float,
+    py: float,
+) -> float:
+    g = _arc_geometry(mx, my, nx, ny, cx, cy)
+    if g is None:
+        return _dist_point_segment(px, py, mx, my, nx, ny)
+    ox, oy, r, start, extent = g
+    if _point_on_arc_tk(px, py, ox, oy, r, start, extent):
+        pr = math.hypot(px - ox, py - oy)
+        return abs(pr - r)
+    return min(math.hypot(px - mx, py - my), math.hypot(px - nx, py - ny))
+
+
 def main() -> None:
     _windows_dpi_before_tk()
 
@@ -87,6 +254,15 @@ def main() -> None:
     OUTLINE = "#171717"
 
     shapes: list[dict[str, float | str]] = []
+    edges: list[dict[str, float | int | tuple[int, int]]] = []
+    next_edge_id = 1
+    selected_edge_id: int | None = None
+    connecting_from: tuple[int, int] | None = None
+    preview_wx: float | None = None
+    preview_wy: float | None = None
+    dragging_arc_edge_id: int | None = None
+    drag_arc_off_x = 0.0
+    drag_arc_off_y = 0.0
 
     scroll_x = 0.0
     scroll_y = 0.0
@@ -251,9 +427,24 @@ def main() -> None:
                 return i
         return None
 
+    def hit_edge(sx: int, sy: int) -> int | None:
+        wx, wy = screen_to_world(sx, sy)
+        thr = 10.0 / zoom
+        best: int | None = None
+        best_d = thr + 1.0
+        for e in edges:
+            eid = int(e["id"])
+            mx, my, nx, ny, cx, cy = edge_world_coords(e)
+            if str(e["kind"]) == "line":
+                d = _dist_point_segment(wx, wy, mx, my, nx, ny)
+            else:
+                d = _dist_point_arc(mx, my, nx, ny, cx, cy, wx, wy)
+            if d < best_d and d <= thr:
+                best_d = d
+                best = eid
+        return best
+
     def bbox_world() -> tuple[float, float, float, float] | None:
-        if not shapes:
-            return None
         min_x = min_y = float("inf")
         max_x = max_y = float("-inf")
         for s in shapes:
@@ -279,7 +470,101 @@ def main() -> None:
                     max_x = max(max_x, px)
                     min_y = min(min_y, py)
                     max_y = max(max_y, py)
+        for e in edges:
+            mx, my, nx, ny, cx, cy = edge_world_coords(e)
+            for px, py in ((mx, my), (nx, ny), (cx, cy)):
+                min_x = min(min_x, px)
+                max_x = max(max_x, px)
+                min_y = min(min_y, py)
+                max_y = max(max_y, py)
+        if min_x == float("inf"):
+            return None
         return min_x, min_y, max_x, max_y
+
+    def iter_handles(si: int) -> list[tuple[str, int, float, float]]:
+        """Her öğe: role ('corner'|'mid'), index, wx, wy."""
+        s = shapes[si]
+        k = str(s["kind"])
+        cx = float(s["cx"])
+        cy = float(s["cy"])
+        out: list[tuple[str, int, float, float]] = []
+        if k == "square":
+            h = float(s["half"])
+            pts = [
+                (cx - h, cy - h),
+                (cx + h, cy - h),
+                (cx + h, cy + h),
+                (cx - h, cy + h),
+            ]
+            for i, (px, py) in enumerate(pts):
+                out.append(("corner", i, px, py))
+            mids = [
+                (cx, cy - h),
+                (cx + h, cy),
+                (cx, cy + h),
+                (cx - h, cy),
+            ]
+            for i, (px, py) in enumerate(mids):
+                out.append(("mid", i, px, py))
+        elif k == "rect":
+            hw = float(s["hw"])
+            hh = float(s["hh"])
+            pts = [
+                (cx - hw, cy - hh),
+                (cx + hw, cy - hh),
+                (cx + hw, cy + hh),
+                (cx - hw, cy + hh),
+            ]
+            for i, (px, py) in enumerate(pts):
+                out.append(("corner", i, px, py))
+            mids = [
+                (cx, cy - hh),
+                (cx + hw, cy),
+                (cx, cy + hh),
+                (cx - hw, cy),
+            ]
+            for i, (px, py) in enumerate(mids):
+                out.append(("mid", i, px, py))
+        else:
+            vs = _tri_vertices(s)
+            for i, (px, py) in enumerate(vs):
+                out.append(("corner", i, px, py))
+            for i in range(3):
+                ax, ay = vs[i]
+                bx, by = vs[(i + 1) % 3]
+                out.append(("mid", i, (ax + bx) / 2.0, (ay + by) / 2.0))
+        return out
+
+    def handle_hit_world(wx: float, wy: float) -> tuple[int, str, int] | None:
+        r = 12.0 / zoom
+        best: tuple[int, str, int] | None = None
+        best_d = r + 1.0
+        for si in range(len(shapes)):
+            for role, idx, hx, hy in iter_handles(si):
+                d = math.hypot(wx - hx, wy - hy)
+                if d < best_d and d <= r:
+                    best_d = d
+                    best = (si, role, idx)
+        return best
+
+    def edge_anchor_world(si: int, role: str, idx: int) -> tuple[float, float]:
+        for r, i, wx, wy in iter_handles(si):
+            if r == role and i == idx:
+                return wx, wy
+        return 0.0, 0.0
+
+    def edge_world_coords(e: dict[str, float | int | tuple[int, int]]) -> tuple[float, float, float, float, float, float]:
+        """mx,my,nx,ny,cx,cy"""
+        a = e["a"]
+        b = e["b"]
+        assert isinstance(a, tuple) and isinstance(b, tuple)
+        si_a, role_a, idx_a = a
+        si_b, role_b, idx_b = b
+        mx, my = edge_anchor_world(si_a, role_a, idx_a)
+        nx, ny = edge_anchor_world(si_b, role_b, idx_b)
+        cx = float(e["cx"])
+        cy = float(e["cy"])
+        return mx, my, nx, ny, cx, cy
 
     def hide_ghost() -> None:
         nonlocal ghost_win
@@ -404,6 +689,79 @@ def main() -> None:
                 pts.append((py - scroll_y) * z)
             canvas.create_polygon(*pts, fill=COL_TRI, outline=OUTLINE, width=ox)
 
+    def draw_edges_layer() -> None:
+        z = zoom
+        for e in edges:
+            eid = int(e["id"])
+            sel = selected_edge_id == eid
+            lw = max(2, int(round((4 if sel else 2) * min(z, 2))))
+            col = "#f59e0b" if sel else "#475569"
+            mx, my, nx, ny, cx, cy = edge_world_coords(e)
+            if str(e["kind"]) == "line":
+                sx0 = (mx - scroll_x) * z
+                sy0 = (my - scroll_y) * z
+                sx1 = (nx - scroll_x) * z
+                sy1 = (ny - scroll_y) * z
+                canvas.create_line(sx0, sy0, sx1, sy1, fill=col, width=lw, capstyle=tk.ROUND)
+            else:
+                prms = _arc_canvas_params(mx, my, nx, ny, cx, cy, scroll_x, scroll_y, z)
+                if prms is None:
+                    sx0 = (mx - scroll_x) * z
+                    sy0 = (my - scroll_y) * z
+                    sx1 = (nx - scroll_x) * z
+                    sy1 = (ny - scroll_y) * z
+                    canvas.create_line(sx0, sy0, sx1, sy1, fill=col, width=lw, capstyle=tk.ROUND)
+                else:
+                    x0, y0, x1, y1, st, ext = prms
+                    canvas.create_arc(
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        start=st,
+                        extent=ext,
+                        style=tk.ARC,
+                        outline=col,
+                        width=lw,
+                    )
+
+    def draw_handles_layer() -> None:
+        z = zoom
+        rh = max(3.0, 5.0 * min(z, 1.5))
+        for si in range(len(shapes)):
+            for _role, _idx, wx, wy in iter_handles(si):
+                sx = (wx - scroll_x) * z
+                sy = (wy - scroll_y) * z
+                canvas.create_oval(
+                    sx - rh,
+                    sy - rh,
+                    sx + rh,
+                    sy + rh,
+                    fill="#ffffff",
+                    outline="#64748b",
+                    width=max(1, int(round(2 * min(z, 1.2)))),
+                )
+
+    def draw_preview_connector() -> None:
+        if connecting_from is None or preview_wx is None or preview_wy is None:
+            return
+        z = zoom
+        si, role, idx = connecting_from
+        wx0, wy0 = edge_anchor_world(si, role, idx)
+        sx0 = (wx0 - scroll_x) * z
+        sy0 = (wy0 - scroll_y) * z
+        sx1 = (preview_wx - scroll_x) * z
+        sy1 = (preview_wy - scroll_y) * z
+        canvas.create_line(
+            sx0,
+            sy0,
+            sx1,
+            sy1,
+            fill="#94a3b8",
+            width=max(1, int(round(2 * z))),
+            dash=(6, 4),
+        )
+
     def redraw() -> None:
         canvas.delete("all")
         w = max(int(canvas.winfo_width()), 1)
@@ -433,8 +791,13 @@ def main() -> None:
                 canvas.create_line(0, sy, w, sy, fill=grid_color, width=min(lw, 3))
             y_world += cell
 
-        for s in shapes:
+        draw_edges_layer()
+
+        for si, s in enumerate(shapes):
             draw_shape_ui(s)
+
+        draw_handles_layer()
+        draw_preview_connector()
 
     def on_resize(_event: tk.Event | None = None) -> None:
         redraw()
@@ -504,24 +867,164 @@ def main() -> None:
         shapes.append(make_shape(k, wx, wy))
         redraw()
 
+    line_menu: tk.Menu | None = None
+
+    def set_edge_line(eid: int) -> None:
+        for e in edges:
+            if int(e["id"]) == eid:
+                e["kind"] = "line"
+                mx, my, nx, ny, _, _ = edge_world_coords(e)
+                e["cx"] = (mx + nx) / 2.0
+                e["cy"] = (my + ny) / 2.0
+                break
+        redraw()
+
+    def set_edge_arc(eid: int) -> None:
+        for e in edges:
+            if int(e["id"]) == eid:
+                e["kind"] = "arc"
+                mx, my, nx, ny, _, _ = edge_world_coords(e)
+                dx = nx - mx
+                dy = ny - my
+                ln = math.hypot(dx, dy)
+                if ln < 1e-9:
+                    e["cx"] = (mx + nx) / 2.0
+                    e["cy"] = (my + ny) / 2.0 - 20.0
+                else:
+                    px = -dy / ln * 24.0
+                    py = dx / ln * 24.0
+                    e["cx"] = (mx + nx) / 2.0 + px
+                    e["cy"] = (my + ny) / 2.0 + py
+                break
+        redraw()
+
+    def show_edge_menu(event: tk.Event, eid: int) -> None:
+        nonlocal line_menu
+        if line_menu is not None:
+            try:
+                line_menu.destroy()
+            except tk.TclError:
+                pass
+        line_menu = tk.Menu(canvas, tearoff=0)
+        line_menu.add_command(label="Düz çizgi", command=lambda: set_edge_line(eid))
+        line_menu.add_command(label="Yay (arc)", command=lambda: set_edge_arc(eid))
+        try:
+            line_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            line_menu.grab_release()
+
+    def hit_arc_body_for_drag(sx: int, sy: int) -> int | None:
+        wx, wy = screen_to_world(sx, sy)
+        thr = 10.0 / zoom
+        end_thr = max(14.0 / zoom, 8.0)
+        best: int | None = None
+        best_d = thr + 1.0
+        for e in edges:
+            if str(e["kind"]) != "arc":
+                continue
+            eid = int(e["id"])
+            mx, my, nx, ny, cx, cy = edge_world_coords(e)
+            if math.hypot(wx - mx, wy - my) <= end_thr or math.hypot(wx - nx, wy - ny) <= end_thr:
+                continue
+            d = _dist_point_arc(mx, my, nx, ny, cx, cy, wx, wy)
+            if d < best_d and d <= thr:
+                best_d = d
+                best = eid
+        return best
+
     def on_canvas_left_down(event: tk.Event) -> None:
         nonlocal dragging_shape_idx, drag_off_x, drag_off_y
+        nonlocal connecting_from, preview_wx, preview_wy
+        nonlocal selected_edge_id, dragging_arc_edge_id, drag_arc_off_x, drag_arc_off_y
+        nonlocal next_edge_id
         close_shapes_menu()
         if palette_drag_kind is not None:
             return
         if event.state & 0x4:
             return
-        idx = hit_top_shape(event.x, event.y)
-        if idx is None:
+
+        aid = hit_arc_body_for_drag(event.x, event.y)
+        if aid is not None:
+            dragging_arc_edge_id = aid
+            wx, wy = screen_to_world(event.x, event.y)
+            for e in edges:
+                if int(e["id"]) == aid:
+                    drag_arc_off_x = wx - float(e["cx"])
+                    drag_arc_off_y = wy - float(e["cy"])
+                    selected_edge_id = aid
+                    break
             return
-        dragging_shape_idx = idx
-        wx, wy = screen_to_world(event.x, event.y)
-        drag_off_x = wx - float(shapes[idx]["cx"])
-        drag_off_y = wy - float(shapes[idx]["cy"])
-        canvas.config(cursor="hand2")
+
+        eid_hit = hit_edge(event.x, event.y)
+        if eid_hit is not None:
+            selected_edge_id = eid_hit
+            redraw()
+            return
+
+        hh = handle_hit_world(*screen_to_world(event.x, event.y))
+        if hh is not None:
+            si, role, idx = hh
+            if connecting_from is None:
+                connecting_from = (si, role, idx)
+                preview_wx, preview_wy = screen_to_world(event.x, event.y)
+            else:
+                fa, fra, fi = connecting_from
+                if fa == si and fra == role and fi == idx:
+                    connecting_from = None
+                    preview_wx = preview_wy = None
+                    redraw()
+                    return
+                mx, my = edge_anchor_world(fa, fra, fi)
+                nx, ny = edge_anchor_world(si, role, idx)
+                edges.append(
+                    {
+                        "id": next_edge_id,
+                        "kind": "line",
+                        "a": connecting_from,
+                        "b": (si, role, idx),
+                        "cx": (mx + nx) / 2.0,
+                        "cy": (my + ny) / 2.0,
+                    }
+                )
+                next_edge_id += 1
+                connecting_from = None
+                preview_wx = preview_wy = None
+                selected_edge_id = None
+            redraw()
+            return
+
+        idx_shape = hit_top_shape(event.x, event.y)
+        if idx_shape is not None:
+            connecting_from = None
+            preview_wx = preview_wy = None
+            dragging_shape_idx = idx_shape
+            wx, wy = screen_to_world(event.x, event.y)
+            drag_off_x = wx - float(shapes[idx_shape]["cx"])
+            drag_off_y = wy - float(shapes[idx_shape]["cy"])
+            canvas.config(cursor="hand2")
+            return
+
+        connecting_from = None
+        preview_wx = preview_wy = None
+        selected_edge_id = None
+        redraw()
 
     def on_canvas_left_motion(event: tk.Event) -> None:
-        nonlocal dragging_shape_idx
+        nonlocal dragging_shape_idx, preview_wx, preview_wy
+        nonlocal dragging_arc_edge_id
+        if dragging_arc_edge_id is not None:
+            wx, wy = screen_to_world(event.x, event.y)
+            for e in edges:
+                if int(e["id"]) == dragging_arc_edge_id:
+                    e["cx"] = wx - drag_arc_off_x
+                    e["cy"] = wy - drag_arc_off_y
+                    break
+            redraw()
+            return
+        if connecting_from is not None:
+            preview_wx, preview_wy = screen_to_world(event.x, event.y)
+            redraw()
+            return
         if dragging_shape_idx is None:
             return
         wx, wy = screen_to_world(event.x, event.y)
@@ -531,9 +1034,26 @@ def main() -> None:
         redraw()
 
     def on_canvas_left_up(_event: tk.Event | None = None) -> None:
-        nonlocal dragging_shape_idx
+        nonlocal dragging_shape_idx, dragging_arc_edge_id
         dragging_shape_idx = None
+        dragging_arc_edge_id = None
         canvas.config(cursor="crosshair")
+
+    def on_canvas_right(event: tk.Event) -> None:
+        nonlocal selected_edge_id
+        eid_hit = hit_edge(event.x, event.y)
+        if eid_hit is None:
+            return
+        selected_edge_id = eid_hit
+        redraw()
+        show_edge_menu(event, eid_hit)
+
+    def on_canvas_motion_hover(event: tk.Event) -> None:
+        nonlocal preview_wx, preview_wy
+        if connecting_from is None:
+            return
+        preview_wx, preview_wy = screen_to_world(event.x, event.y)
+        redraw()
 
     def pan_start(event: tk.Event) -> None:
         nonlocal pan_anchor
@@ -593,13 +1113,16 @@ def main() -> None:
         redraw()
 
     def cancel_palette_escape(_event: tk.Event | None = None) -> None:
-        nonlocal palette_drag_kind
-        if palette_drag_kind is None:
+        nonlocal palette_drag_kind, connecting_from, preview_wx, preview_wy
+        if palette_drag_kind is None and connecting_from is None:
             return
         root.unbind_all("<B1-Motion>")
         root.unbind_all("<ButtonRelease-1>")
         palette_drag_kind = None
+        connecting_from = None
+        preview_wx = preview_wy = None
         hide_ghost()
+        redraw()
 
     def make_palette_tile(title: str, subtitle: str, hint: str, kind: str, draw_fn) -> None:
         row = tk.Frame(shapes_popup, bg=popup_bg)
@@ -694,15 +1217,14 @@ def main() -> None:
     canvas.bind("<Button-1>", on_canvas_left_down)
     canvas.bind("<B1-Motion>", on_canvas_left_motion)
     canvas.bind("<ButtonRelease-1>", on_canvas_left_up)
+    canvas.bind("<Motion>", on_canvas_motion_hover)
+    canvas.bind("<Button-3>", on_canvas_right)
     canvas.bind("<Control-Button-1>", pan_start)
     canvas.bind("<Control-B1-Motion>", pan_motion)
     canvas.bind("<Control-ButtonRelease-1>", pan_end)
     canvas.bind("<Button-2>", pan_start)
     canvas.bind("<B2-Motion>", pan_motion)
     canvas.bind("<ButtonRelease-2>", pan_end)
-    canvas.bind("<Button-3>", pan_start)
-    canvas.bind("<B3-Motion>", pan_motion)
-    canvas.bind("<ButtonRelease-3>", pan_end)
 
     if sys.platform == "win32":
         canvas.bind("<MouseWheel>", on_wheel_win)
