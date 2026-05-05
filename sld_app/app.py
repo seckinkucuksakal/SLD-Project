@@ -184,9 +184,6 @@ def run() -> None:
     canvas_holder = tk.Frame(content_area)
     canvas_holder.pack(fill=tk.BOTH, expand=True)
 
-    name_var = tk.StringVar(value="")
-    name_syncing = False
-
     kind_labels_tr = {"square": "Kare", "rect": "Dikdörtgen", "triangle": "Üçgen"}
 
     def shape_kind_label(kind: str) -> str:
@@ -244,31 +241,11 @@ def run() -> None:
 
     tk.Label(
         panel_pad,
-        text="Seçili şekil — isim",
-        bg=C.PANEL_BG,
-        fg=muted,
-        font=("Segoe UI", 9),
-    ).pack(anchor="w")
-
-    name_entry = tk.Entry(
-        panel_pad,
-        textvariable=name_var,
-        font=("Segoe UI", 10),
-        state="disabled",
-        relief=tk.FLAT,
-        highlightthickness=1,
-        highlightbackground=bar_bd,
-        highlightcolor=C.SELECTION_OUTLINE,
-    )
-    name_entry.pack(fill=tk.X, pady=(4, 12))
-
-    tk.Label(
-        panel_pad,
         text="Şekiller",
         bg=C.PANEL_BG,
         fg=ink,
         font=("Segoe UI", 10, "bold"),
-    ).pack(anchor="w")
+    ).pack(anchor="w", pady=(0, 8))
 
     list_canvas = tk.Canvas(panel_pad, bg=C.PANEL_BG, highlightthickness=0)
     list_scroll = tk.Scrollbar(panel_pad, orient=tk.VERTICAL, command=list_canvas.yview)
@@ -300,32 +277,6 @@ def run() -> None:
     list_canvas.bind("<MouseWheel>", _on_list_mousewheel)
     list_canvas.bind("<Button-4>", _on_list_mousewheel)
     list_canvas.bind("<Button-5>", _on_list_mousewheel)
-
-    def sync_name_field() -> None:
-        nonlocal name_syncing
-        name_syncing = True
-        try:
-            if len(selected_shape_indices) == 1:
-                si = next(iter(selected_shape_indices))
-                name_var.set(str(shapes[si].get("name", "")))
-                name_entry.configure(state="normal")
-            else:
-                name_var.set("")
-                name_entry.configure(state="disabled")
-        finally:
-            name_syncing = False
-
-    def on_name_changed(*_args: object) -> None:
-        nonlocal name_syncing
-        if name_syncing:
-            return
-        if len(selected_shape_indices) != 1:
-            return
-        si = next(iter(selected_shape_indices))
-        shapes[si]["name"] = str(name_var.get()).strip()
-        refresh_shape_list()
-
-    name_var.trace_add("write", on_name_changed)
 
     def refresh_shape_list() -> None:
         for w in list_inner.winfo_children():
@@ -398,12 +349,10 @@ def run() -> None:
         selected_edge_id = None
         connecting_from = None
         preview_wx = preview_wy = None
-        sync_name_field()
         refresh_shape_list()
         redraw()
 
     def selection_ui_sync() -> None:
-        sync_name_field()
         refresh_shape_list()
 
     canvas = tk.Canvas(canvas_holder, highlightthickness=0, bg=bg, cursor="crosshair")
@@ -1065,6 +1014,124 @@ def run() -> None:
         redraw()
 
     line_menu: tk.Menu | None = None
+    shape_ctx_menu: tk.Menu | None = None
+    shape_props_modal: tk.Toplevel | None = None
+
+    def close_shape_props_modal() -> None:
+        nonlocal shape_props_modal
+        if shape_props_modal is not None:
+            try:
+                shape_props_modal.destroy()
+            except tk.TclError:
+                pass
+            shape_props_modal = None
+
+    def center_modal_dialog(win: tk.Toplevel) -> None:
+        root.update_idletasks()
+        win.update_idletasks()
+        rw = root.winfo_width()
+        rh = root.winfo_height()
+        ww = win.winfo_reqwidth()
+        wh = win.winfo_reqheight()
+        x = root.winfo_rootx() + max(0, (rw - ww) // 2)
+        y = root.winfo_rooty() + max(0, (rh - wh) // 2)
+        win.geometry(f"+{x}+{y}")
+
+    def show_shape_properties_modal(si: int) -> None:
+        nonlocal shape_props_modal
+        if si < 0 or si >= len(shapes):
+            return
+        close_shape_props_modal()
+        dlg = tk.Toplevel(root)
+        shape_props_modal = dlg
+        dlg.title("Özellikler")
+        dlg.resizable(False, False)
+        dlg.transient(root)
+        dlg.configure(bg=popup_bg, highlightthickness=1, highlightbackground=bar_bd)
+        dlg.protocol("WM_DELETE_WINDOW", close_shape_props_modal)
+
+        pad = tk.Frame(dlg, bg=popup_bg, padx=22, pady=18)
+        pad.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            pad,
+            text="İsim",
+            bg=popup_bg,
+            fg=ink,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w")
+        k = str(shapes[si]["kind"])
+        tk.Label(
+            pad,
+            text=shape_kind_label(k),
+            bg=popup_bg,
+            fg=muted,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 8))
+
+        name_val = str(shapes[si].get("name", ""))
+        name_e = tk.Entry(
+            pad,
+            width=32,
+            font=("Segoe UI", 10),
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=bar_bd,
+            highlightcolor=C.SELECTION_OUTLINE,
+        )
+        name_e.pack(fill=tk.X, pady=(0, 16))
+        name_e.insert(0, name_val)
+        name_e.select_range(0, tk.END)
+        name_e.focus_set()
+
+        btn_row = tk.Frame(pad, bg=popup_bg)
+        btn_row.pack(fill=tk.X)
+
+        def on_ok() -> None:
+            if 0 <= si < len(shapes):
+                shapes[si]["name"] = str(name_e.get()).strip()
+                selection_ui_sync()
+                redraw()
+            close_shape_props_modal()
+
+        def on_cancel() -> None:
+            close_shape_props_modal()
+
+        tk.Button(
+            btn_row,
+            text="İptal",
+            command=on_cancel,
+            cursor="hand2",
+            relief=tk.FLAT,
+            bg="#f1f5f9",
+            fg=ink,
+            font=("Segoe UI", 9),
+            padx=16,
+            pady=8,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(
+            btn_row,
+            text="Tamam",
+            command=on_ok,
+            cursor="hand2",
+            relief=tk.FLAT,
+            bg="#2563eb",
+            fg="#ffffff",
+            activebackground="#1d4ed8",
+            activeforeground="#ffffff",
+            font=("Segoe UI", 9, "bold"),
+            padx=16,
+            pady=8,
+        ).pack(side=tk.RIGHT)
+
+        dlg.bind("<Return>", lambda _e: on_ok())
+        dlg.bind("<Escape>", lambda _e: on_cancel())
+        center_modal_dialog(dlg)
+        dlg.update_idletasks()
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
 
     def set_edge_line(eid: int) -> None:
         for e in edges:
@@ -1109,6 +1176,23 @@ def run() -> None:
             line_menu.tk_popup(event.x_root, event.y_root)
         finally:
             line_menu.grab_release()
+
+    def show_shape_context_menu(event: tk.Event, si: int) -> None:
+        nonlocal shape_ctx_menu
+        if shape_ctx_menu is not None:
+            try:
+                shape_ctx_menu.destroy()
+            except tk.TclError:
+                pass
+        shape_ctx_menu = tk.Menu(canvas, tearoff=0)
+        shape_ctx_menu.add_command(
+            label="Özellikler",
+            command=lambda idx=si: (close_shape_props_modal(), show_shape_properties_modal(idx)),
+        )
+        try:
+            shape_ctx_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            shape_ctx_menu.grab_release()
 
     def hit_arc_body_for_drag(sx: int, sy: int) -> int | None:
         wx, wy = screen_to_world(sx, sy)
@@ -1328,13 +1412,23 @@ def run() -> None:
         delete_selected_shapes()
 
     def on_canvas_right(event: tk.Event) -> None:
-        nonlocal selected_edge_id
-        eid_hit = hit_edge(event.x, event.y)
-        if eid_hit is None:
+        nonlocal selected_edge_id, connecting_from, preview_wx, preview_wy, selected_shape_indices
+        close_shapes_menu()
+        idx_shape = hit_top_shape(event.x, event.y)
+        if idx_shape is not None:
+            selected_shape_indices = {idx_shape}
+            selected_edge_id = None
+            connecting_from = None
+            preview_wx = preview_wy = None
+            selection_ui_sync()
+            redraw()
+            show_shape_context_menu(event, idx_shape)
             return
-        selected_edge_id = eid_hit
-        redraw()
-        show_edge_menu(event, eid_hit)
+        eid_hit = hit_edge(event.x, event.y)
+        if eid_hit is not None:
+            selected_edge_id = eid_hit
+            redraw()
+            show_edge_menu(event, eid_hit)
 
     def on_canvas_motion_hover(event: tk.Event) -> None:
         nonlocal preview_wx, preview_wy
@@ -1406,6 +1500,7 @@ def run() -> None:
     def cancel_palette_escape(_event: tk.Event | None = None) -> None:
         nonlocal palette_drag_kind, connecting_from, preview_wx, preview_wy
         nonlocal selected_shape_indices, selected_edge_id, marquee_active
+        close_shape_props_modal()
         selected_shape_indices = set()
         selected_edge_id = None
         marquee_active = False
