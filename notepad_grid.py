@@ -1,21 +1,64 @@
 #!/usr/bin/env python3
 """
 Kareli not defteri görünümünde basit bir yazı penceresi.
-Tkinter standart kütüphanedir; pip gerekmez. Linux’ta genelde:
-  sudo apt install python3-tk
-Çalıştırma: python3 notepad_grid.py
+
+Tkinter standart kütüphanedir (pip gerekmez).
+- Windows: python.org kurulumunda Tk genelde hazırdır.
+- Linux: sudo apt install python3-tk
+
+Çalıştırma: python notepad_grid.py  veya  python3 notepad_grid.py
 """
 
+from __future__ import annotations
+
+import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import scrolledtext
 
 
-def _pick_serif(size: int) -> tuple[str, int]:
-    for name in ("Georgia", "DejaVu Serif", "Liberation Serif", "Noto Serif", "Times New Roman"):
-        if name in tkfont.families():
+def _windows_dpi_before_tk() -> None:
+    """Yüksek DPI ekranlarda bulanık görünmeyi azaltır (Windows). Tk() öncesi çağrılmalı."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # Win 8.1+: iz başına monitör DPI
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            import ctypes
+
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
+def _pick_ui_font(size: int) -> tuple[str, int]:
+    families = tkfont.families()
+    if sys.platform == "win32":
+        order = (
+            "Segoe UI",
+            "Georgia",
+            "Cambria",
+            "Calibri",
+            "Times New Roman",
+            "DejaVu Serif",
+            "Liberation Serif",
+        )
+    else:
+        order = (
+            "Georgia",
+            "DejaVu Serif",
+            "Liberation Serif",
+            "Noto Serif",
+            "Times New Roman",
+        )
+    for name in order:
+        if name in families:
             return (name, size)
-    return ("serif", size)
+    return ("TkTextFont", size)
 
 
 def draw_grid(canvas: tk.Canvas, cell: int, margin: int, color: str) -> None:
@@ -37,6 +80,8 @@ def draw_grid(canvas: tk.Canvas, cell: int, margin: int, color: str) -> None:
 
 
 def main() -> None:
+    _windows_dpi_before_tk()
+
     root = tk.Tk()
     root.title("Kareli Not Defteri")
     root.geometry("920x640")
@@ -50,7 +95,7 @@ def main() -> None:
     canvas = tk.Canvas(root, highlightthickness=0, bg=paper)
     canvas.pack(fill=tk.BOTH, expand=True)
 
-    font_spec = _pick_serif(13)
+    font_spec = _pick_ui_font(13)
     text_bg = "#fffef5"
     text = scrolledtext.ScrolledText(
         canvas,
