@@ -9,7 +9,8 @@ Etkileşim:
   Yerleşik şekil üzerinde sol sürükle → taşı
   Ctrl veya orta/sağ + sürükle → pan
   Fare tekerleği → yakınlaştır / uzaklaştır | Shift/Ctrl + tekerlek → kaydır
-  Sağ üst «Merkezle» → tüm şekilleri görünüme ortalar
+  Üst çubukta «Şekiller» menüsü — basılı tutup tuval üzerine bırak
+  Üst çubukta «Merkezle» → tüm şekilleri görünüme ortalar
 
 Çalıştırma: python notepad_grid.py
 """
@@ -103,64 +104,116 @@ def main() -> None:
     ghost_win: tk.Toplevel | None = None
     GHOST_WH = 72
     TRANSP_GHOST = "#ff00fe"
+    shapes_menu_open = False
 
     root = tk.Tk()
     root.title("SLD App")
-    root.geometry("1080x640")
+    root.geometry("1000x640")
     root.minsize(480, 240)
+
+    bar_bg = "#f8fafc"
+    bar_bd = "#e2e8f0"
+    popup_bg = "#ffffff"
+    muted = "#64748b"
+    ink = "#0f172a"
 
     body = tk.Frame(root)
     body.pack(fill=tk.BOTH, expand=True)
 
+    topbar = tk.Frame(body, bg=bar_bg, highlightthickness=1, highlightbackground=bar_bd)
+    topbar.pack(fill=tk.X)
+
+    left_head = tk.Frame(topbar, bg=bar_bg)
+    left_head.pack(side=tk.LEFT, padx=(14, 10), pady=10)
+
+    hint_var = tk.StringVar(value="")
+
+    def toggle_shapes_menu() -> None:
+        nonlocal shapes_menu_open
+        shapes_menu_open = not shapes_menu_open
+        if shapes_menu_open:
+            position_shapes_popup()
+            shapes_popup.lift()
+            shapes_toggle.configure(text="Şekiller  ▲")
+        else:
+            shapes_popup.place_forget()
+            shapes_toggle.configure(text="Şekiller  ▼")
+            hint_var.set("")
+
+    shapes_toggle = tk.Button(
+        left_head,
+        text="Şekiller  ▼",
+        command=toggle_shapes_menu,
+        cursor="hand2",
+        relief=tk.FLAT,
+        bg=bar_bg,
+        fg=ink,
+        activebackground="#f1f5f9",
+        activeforeground=ink,
+        font=("Segoe UI", 10, "bold"),
+        bd=0,
+        padx=10,
+        pady=6,
+        highlightthickness=1,
+        highlightbackground=bar_bd,
+    )
+    shapes_toggle.pack(side=tk.LEFT)
+
+    tk.Label(
+        left_head,
+        textvariable=hint_var,
+        bg=bar_bg,
+        fg=muted,
+        font=("Segoe UI", 9),
+    ).pack(side=tk.LEFT, padx=(18, 0))
+
+    tk.Button(
+        topbar,
+        text="Merkezle",
+        command=lambda: center_on_shapes(),
+        cursor="hand2",
+        relief=tk.FLAT,
+        bg="#ffffff",
+        fg=ink,
+        activebackground="#f1f5f9",
+        activeforeground=ink,
+        font=("Segoe UI", 9),
+        bd=0,
+        padx=14,
+        pady=6,
+        highlightthickness=1,
+        highlightbackground=bar_bd,
+    ).pack(side=tk.RIGHT, padx=(8, 14), pady=10)
+
     canvas_holder = tk.Frame(body)
-    canvas_holder.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    canvas_holder.pack(fill=tk.BOTH, expand=True)
 
     canvas = tk.Canvas(canvas_holder, highlightthickness=0, bg=bg, cursor="crosshair")
     canvas.pack(fill=tk.BOTH, expand=True)
 
-    panel_w = 256
-    panel_bg = "#f8fafc"
-    card_bg = "#ffffff"
-    border_muted = "#e2e8f0"
-    text_primary = "#0f172a"
-    text_muted = "#64748b"
-
-    panel = tk.Frame(body, width=panel_w, bg=panel_bg)
-    panel.pack(side=tk.RIGHT, fill=tk.Y)
-    panel.pack_propagate(False)
-
-    panel_inner = tk.Frame(panel, bg=panel_bg)
-    panel_inner.pack(fill=tk.BOTH, expand=True, padx=14, pady=16)
-
-    tk.Label(
-        panel_inner,
-        text="Şekiller",
-        bg=panel_bg,
-        fg=text_primary,
-        font=("Segoe UI", 13, "bold"),
-    ).pack(anchor="w")
-
-    tk.Label(
-        panel_inner,
-        text="Sürükleyip tuval üzerine bırakın.",
-        bg=panel_bg,
-        fg=text_muted,
-        font=("Segoe UI", 9),
-        wraplength=panel_w - 48,
-        justify=tk.LEFT,
-    ).pack(anchor="w", pady=(4, 14))
-
-    card = tk.Frame(
-        panel_inner,
-        bg=card_bg,
+    shapes_popup = tk.Frame(
+        root,
+        bg=popup_bg,
         highlightthickness=1,
-        highlightbackground=border_muted,
-        highlightcolor=border_muted,
+        highlightbackground=bar_bd,
+        padx=14,
+        pady=14,
     )
-    card.pack(fill=tk.BOTH, expand=True)
 
-    card_body = tk.Frame(card, bg=card_bg)
-    card_body.pack(fill=tk.BOTH, expand=True, padx=2, pady=(10, 12))
+    def position_shapes_popup() -> None:
+        root.update_idletasks()
+        bx = shapes_toggle.winfo_rootx() - root.winfo_rootx()
+        by = shapes_toggle.winfo_rooty() - root.winfo_rooty() + shapes_toggle.winfo_height() + 6
+        shapes_popup.place(x=bx, y=by)
+
+    def close_shapes_menu() -> None:
+        nonlocal shapes_menu_open
+        if not shapes_menu_open:
+            return
+        shapes_menu_open = False
+        shapes_popup.place_forget()
+        shapes_toggle.configure(text="Şekiller  ▼")
+        hint_var.set("")
 
     def make_shape(kind: str, cx: float, cy: float) -> dict[str, float | str]:
         if kind == "square":
@@ -227,25 +280,6 @@ def main() -> None:
                     min_y = min(min_y, py)
                     max_y = max(max_y, py)
         return min_x, min_y, max_x, max_y
-
-    center_btn = tk.Button(
-        canvas_holder,
-        text="Merkezle",
-        cursor="hand2",
-        relief=tk.FLAT,
-        bg="#fafafa",
-        fg="#334155",
-        activebackground="#e4e4e7",
-        activeforeground="#0f172a",
-        bd=0,
-        padx=12,
-        pady=6,
-        highlightthickness=1,
-        highlightbackground="#d4d4d8",
-        highlightcolor="#d4d4d8",
-        command=lambda: center_on_shapes(),
-    )
-    center_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
 
     def hide_ghost() -> None:
         nonlocal ghost_win
@@ -441,6 +475,7 @@ def main() -> None:
 
     def palette_press(kind: str) -> None:
         nonlocal palette_drag_kind
+        close_shapes_menu()
         palette_drag_kind = kind
         show_ghost(kind)
         root.bind_all("<B1-Motion>", palette_motion)
@@ -471,6 +506,7 @@ def main() -> None:
 
     def on_canvas_left_down(event: tk.Event) -> None:
         nonlocal dragging_shape_idx, drag_off_x, drag_off_y
+        close_shapes_menu()
         if palette_drag_kind is not None:
             return
         if event.state & 0x4:
@@ -565,48 +601,50 @@ def main() -> None:
         palette_drag_kind = None
         hide_ghost()
 
-    def make_palette_row(label: str, subtitle: str, kind: str, draw_fn) -> None:
-        row = tk.Frame(card_body, bg=card_bg)
-        row.pack(fill=tk.X, padx=12, pady=(0, 10))
+    def make_palette_tile(title: str, subtitle: str, hint: str, kind: str, draw_fn) -> None:
+        row = tk.Frame(shapes_popup, bg=popup_bg)
+        row.pack(fill=tk.X, pady=(0, 12))
 
-        preview = tk.Frame(
+        preview_wrap = tk.Frame(
             row,
             bg="#f8fafc",
             highlightthickness=1,
-            highlightbackground=border_muted,
-            highlightcolor=border_muted,
+            highlightbackground=bar_bd,
+            highlightcolor=bar_bd,
         )
-        preview.pack(side=tk.LEFT)
+        preview_wrap.pack(side=tk.LEFT)
         cv = tk.Canvas(
-            preview,
-            width=72,
-            height=72,
+            preview_wrap,
+            width=64,
+            height=64,
             bg="#f8fafc",
             highlightthickness=0,
             cursor="hand2",
         )
-        cv.pack(padx=6, pady=6)
-        draw_fn(cv, 36, 36)
+        cv.pack(padx=8, pady=8)
+        draw_fn(cv, 32, 32)
         cv.bind("<ButtonPress-1>", lambda _e, k=kind: palette_press(k))
+        cv.bind("<Enter>", lambda _e, h=hint: hint_var.set(h))
+        cv.bind("<Leave>", lambda _e: hint_var.set(""))
 
-        txt = tk.Frame(row, bg=card_bg)
-        txt.pack(side=tk.LEFT, padx=(12, 0), fill=tk.Y)
+        col = tk.Frame(row, bg=popup_bg)
+        col.pack(side=tk.LEFT, padx=(12, 0), fill=tk.Y)
         tk.Label(
-            txt,
-            text=label,
-            bg=card_bg,
-            fg=text_primary,
+            col,
+            text=title,
+            bg=popup_bg,
+            fg=ink,
             font=("Segoe UI", 10, "bold"),
             anchor="w",
         ).pack(anchor="nw")
         tk.Label(
-            txt,
+            col,
             text=subtitle,
-            bg=card_bg,
-            fg=text_muted,
+            bg=popup_bg,
+            fg=muted,
             font=("Segoe UI", 8),
             anchor="w",
-            wraplength=panel_w - 140,
+            wraplength=200,
             justify=tk.LEFT,
         ).pack(anchor="nw")
 
@@ -630,9 +668,27 @@ def main() -> None:
             width=2,
         )
 
-    make_palette_row("Kare", "Eş kenarlı dörtgen", "square", draw_prev_square)
-    make_palette_row("Dikdörtgen", "Geniş dikdörtgen", "rect", draw_prev_rect)
-    make_palette_row("Üçgen", "Üç köşeli şekil", "triangle", draw_prev_tri)
+    make_palette_tile(
+        "Kare",
+        "Eş kenarlı dörtgen",
+        "Tuval üzerine kare yerleştirir.",
+        "square",
+        draw_prev_square,
+    )
+    make_palette_tile(
+        "Dikdörtgen",
+        "Yatay dikdörtgen",
+        "Tuval üzerine dikdörtgen yerleştirir.",
+        "rect",
+        draw_prev_rect,
+    )
+    make_palette_tile(
+        "Üçgen",
+        "Üç köşe",
+        "Tuval üzerine üçgen yerleştirir.",
+        "triangle",
+        draw_prev_tri,
+    )
 
     canvas.bind("<Configure>", on_resize)
     canvas.bind("<Button-1>", on_canvas_left_down)
