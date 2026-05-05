@@ -7,7 +7,8 @@ Tkinter standart kütüphanedir (pip gerekmez).
 Etkileşim:
   Bloğun üzerinde sol tık + sürükle → pürüzsüz taşı (çizgiler arasında durabilir)
   Ctrl veya orta/sağ + sürükle → görünümü kaydır (pan, sınırsız)
-  Fare tekerleği → kaydır; Shift + tekerlek → yatay (Windows)
+  Fare tekerleği → yakınlaştır / uzaklaştır (imleç altı sabit kalır)
+  Shift + tekerlek → yatay kaydır | Ctrl + tekerlek → dikey kaydır
   Sağ üst «Merkezle» → görünümü bloğun üzerine odaklar
 
 Çalıştırma: python notepad_grid.py
@@ -15,6 +16,7 @@ Etkileşim:
 
 from __future__ import annotations
 
+import math
 import sys
 import tkinter as tk
 
@@ -48,12 +50,16 @@ def main() -> None:
 
     block_half = (cell - 2 * block_pad) / 2.0
 
-    # Blok merkezi, dünya piksel koordinatları (float; ızgara ile hizalı değil)
+    # Blok merkezi, dünya birimi (zoom'dan bağımsız)
     block_cx = cell / 2.0
     block_cy = cell / 2.0
 
     scroll_x = 0.0
     scroll_y = 0.0
+    zoom = 1.0
+    ZOOM_MIN = 0.08
+    ZOOM_MAX = 16.0
+    ZOOM_FACTOR = 1.12
 
     dragging_block = False
     drag_off_x = 0.0
@@ -88,7 +94,7 @@ def main() -> None:
     center_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
 
     def screen_to_world(sx: int, sy: int) -> tuple[float, float]:
-        return float(sx) + scroll_x, float(sy) + scroll_y
+        return scroll_x + float(sx) / zoom, scroll_y + float(sy) / zoom
 
     def hit_block(sx: int, sy: int) -> bool:
         mx, my = screen_to_world(sx, sy)
@@ -102,34 +108,41 @@ def main() -> None:
         w = max(int(canvas.winfo_width()), 1)
         h = max(int(canvas.winfo_height()), 1)
 
-        first_v = int(scroll_x // cell) * cell
-        x_world = float(first_v)
-        while x_world <= scroll_x + w:
-            sx = x_world - scroll_x
-            canvas.create_line(sx, 0, sx, h, fill=grid_color, width=1)
+        z = zoom
+        wx_left = scroll_x
+        wx_right = scroll_x + w / z
+
+        first_v = math.floor(wx_left / cell) * cell
+        x_world = first_v
+        while x_world <= wx_right + 1e-9:
+            sx = (x_world - scroll_x) * z
+            if -2 <= sx <= w + 2:
+                lw = max(1, int(round(z)))
+                canvas.create_line(sx, 0, sx, h, fill=grid_color, width=min(lw, 3))
             x_world += cell
 
-        first_h = int(scroll_y // cell) * cell
-        y_world = float(first_h)
-        while y_world <= scroll_y + h:
-            sy = y_world - scroll_y
-            canvas.create_line(0, sy, w, sy, fill=grid_color, width=1)
+        wy_top = scroll_y
+        wy_bot = scroll_y + h / z
+        first_h = math.floor(wy_top / cell) * cell
+        y_world = first_h
+        while y_world <= wy_bot + 1e-9:
+            sy = (y_world - scroll_y) * z
+            if -2 <= sy <= h + 2:
+                lw = max(1, int(round(z)))
+                canvas.create_line(0, sy, w, sy, fill=grid_color, width=min(lw, 3))
             y_world += cell
 
-        bx = block_cx - scroll_x
-        by = block_cy - scroll_y
-        x0 = bx - block_half
-        y0 = by - block_half
-        x1 = bx + block_half
-        y1 = by + block_half
+        bx = (block_cx - scroll_x) * z
+        by = (block_cy - scroll_y) * z
+        half_s = block_half * z
         canvas.create_rectangle(
-            x0,
-            y0,
-            x1,
-            y1,
+            bx - half_s,
+            by - half_s,
+            bx + half_s,
+            by + half_s,
             fill=block_fill,
             outline=block_outline,
-            width=2,
+            width=max(1, int(round(2 * z / max(zoom, 0.25)))),
             tags="block",
         )
 
@@ -142,8 +155,24 @@ def main() -> None:
         nonlocal scroll_x, scroll_y
         w = max(int(canvas.winfo_width()), 1)
         h = max(int(canvas.winfo_height()), 1)
-        scroll_x = block_cx - w / 2.0
-        scroll_y = block_cy - h / 2.0
+        scroll_x = block_cx - w / (2.0 * zoom)
+        scroll_y = block_cy - h / (2.0 * zoom)
+        redraw()
+
+    def zoom_at_screen(mx: int, my: int, delta_notches: int) -> None:
+        nonlocal scroll_x, scroll_y, zoom
+        if delta_notches == 0:
+            return
+        old_z = zoom
+        new_z = old_z * (ZOOM_FACTOR**delta_notches)
+        new_z = max(ZOOM_MIN, min(ZOOM_MAX, new_z))
+        if new_z == old_z:
+            return
+        wx = scroll_x + mx / old_z
+        wy = scroll_y + my / old_z
+        zoom = new_z
+        scroll_x = wx - mx / zoom
+        scroll_y = wy - my / zoom
         redraw()
 
     def on_left_down(event: tk.Event) -> None:
@@ -181,8 +210,8 @@ def main() -> None:
         if pan_anchor is None:
             return
         ax, ay, sx0, sy0 = pan_anchor
-        scroll_x = sx0 + (ax - event.x)
-        scroll_y = sy0 + (ay - event.y)
+        scroll_x = sx0 + (ax - event.x) / zoom
+        scroll_y = sy0 + (ay - event.y) / zoom
         redraw()
 
     def pan_end(_event: tk.Event | None = None) -> None:
@@ -190,37 +219,40 @@ def main() -> None:
         pan_anchor = None
         canvas.config(cursor="crosshair" if not dragging_block else "hand2")
 
-    def on_wheel(event: tk.Event) -> str | None:
-        nonlocal scroll_x, scroll_y
-        step = float(cell)
+    def on_wheel_win(event: tk.Event) -> str | None:
         shift = bool(event.state & 0x1)
+        ctrl = bool(event.state & 0x4)
+        delta_lines = int(event.delta // 120)
+        if delta_lines == 0 and event.delta != 0:
+            delta_lines = 1 if event.delta > 0 else -1
 
-        if sys.platform == "win32":
-            delta = int(event.delta // 120)
-        else:
-            delta = 1 if getattr(event, "num", 0) == 4 else -1
+        if not shift and not ctrl:
+            zoom_at_screen(event.x, event.y, delta_lines)
+            return "break"
 
+        step = float(cell)
         if shift:
-            scroll_x -= delta * step
+            scroll_x -= delta_lines * step
         else:
-            scroll_y -= delta * step
+            scroll_y -= delta_lines * step
         redraw()
         return "break"
 
-    def on_wheel_linux_up(event: tk.Event) -> None:
-        nonlocal scroll_x, scroll_y
-        if event.state & 0x1:
-            scroll_x -= cell
-        else:
-            scroll_y -= cell
-        redraw()
+    def on_wheel_linux(event: tk.Event) -> None:
+        shift = bool(event.state & 0x1)
+        ctrl = bool(event.state & 0x4)
+        up = event.num == 4
+        delta_lines = 1 if up else -1
 
-    def on_wheel_linux_down(event: tk.Event) -> None:
-        nonlocal scroll_x, scroll_y
-        if event.state & 0x1:
-            scroll_x += cell
+        if not shift and not ctrl:
+            zoom_at_screen(event.x, event.y, delta_lines)
+            return
+
+        step = float(cell)
+        if shift:
+            scroll_x -= delta_lines * step
         else:
-            scroll_y += cell
+            scroll_y -= delta_lines * step
         redraw()
 
     canvas.bind("<Configure>", on_resize)
@@ -238,10 +270,10 @@ def main() -> None:
     canvas.bind("<ButtonRelease-3>", pan_end)
 
     if sys.platform == "win32":
-        canvas.bind("<MouseWheel>", on_wheel)
+        canvas.bind("<MouseWheel>", on_wheel_win)
     else:
-        canvas.bind("<Button-4>", on_wheel_linux_up)
-        canvas.bind("<Button-5>", on_wheel_linux_down)
+        canvas.bind("<Button-4>", on_wheel_linux)
+        canvas.bind("<Button-5>", on_wheel_linux)
 
     canvas.bind("<Enter>", lambda _e: canvas.focus_set())
 
