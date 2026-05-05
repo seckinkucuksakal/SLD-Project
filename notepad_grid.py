@@ -5,7 +5,7 @@ SLD App — kareli dünya; paletten şekil sürükleyip bırakma ve yerleşik ş
 Tkinter standart kütüphanedir (pip gerekmez).
 
 Etkileşim:
-  Paletten şekil üzerine bas, sürükle, tuşa basılıyken canvas üzerinde bırak → yerleşir
+  Paletten şekle basılı tut → fare ucunda hayalet önizleme; tuval üzerinde bırak → yerleşir
   Yerleşik şekil üzerinde sol sürükle → taşı
   Ctrl veya orta/sağ + sürükle → pan
   Fare tekerleği → yakınlaştır / uzaklaştır | Shift/Ctrl + tekerlek → kaydır
@@ -100,6 +100,9 @@ def main() -> None:
     pan_anchor: tuple[int, int, float, float] | None = None
 
     palette_drag_kind: str | None = None
+    ghost_win: tk.Toplevel | None = None
+    GHOST_WH = 72
+    TRANSP_GHOST = "#ff00fe"
 
     root = tk.Tk()
     root.title("SLD App")
@@ -115,28 +118,49 @@ def main() -> None:
     canvas = tk.Canvas(canvas_holder, highlightthickness=0, bg=bg, cursor="crosshair")
     canvas.pack(fill=tk.BOTH, expand=True)
 
-    panel_w = 220
-    panel = tk.Frame(body, width=panel_w, bg="#e4e4e7")
+    panel_w = 256
+    panel_bg = "#f8fafc"
+    card_bg = "#ffffff"
+    border_muted = "#e2e8f0"
+    text_primary = "#0f172a"
+    text_muted = "#64748b"
+
+    panel = tk.Frame(body, width=panel_w, bg=panel_bg)
     panel.pack(side=tk.RIGHT, fill=tk.Y)
     panel.pack_propagate(False)
 
-    tk.Label(
-        panel,
-        text="Şekiller",
-        bg="#e4e4e7",
-        fg="#18181b",
-        font=("Segoe UI", 11, "bold"),
-    ).pack(anchor="w", padx=12, pady=(14, 6))
+    panel_inner = tk.Frame(panel, bg=panel_bg)
+    panel_inner.pack(fill=tk.BOTH, expand=True, padx=14, pady=16)
 
     tk.Label(
-        panel,
-        text="Basılı tutup tuval üzerinde bırakın.",
-        bg="#e4e4e7",
-        fg="#52525b",
+        panel_inner,
+        text="Şekiller",
+        bg=panel_bg,
+        fg=text_primary,
+        font=("Segoe UI", 13, "bold"),
+    ).pack(anchor="w")
+
+    tk.Label(
+        panel_inner,
+        text="Sürükleyip tuval üzerine bırakın.",
+        bg=panel_bg,
+        fg=text_muted,
         font=("Segoe UI", 9),
-        wraplength=panel_w - 24,
+        wraplength=panel_w - 48,
         justify=tk.LEFT,
-    ).pack(anchor="w", padx=12, pady=(0, 10))
+    ).pack(anchor="w", pady=(4, 14))
+
+    card = tk.Frame(
+        panel_inner,
+        bg=card_bg,
+        highlightthickness=1,
+        highlightbackground=border_muted,
+        highlightcolor=border_muted,
+    )
+    card.pack(fill=tk.BOTH, expand=True)
+
+    card_body = tk.Frame(card, bg=card_bg)
+    card_body.pack(fill=tk.BOTH, expand=True, padx=2, pady=(10, 12))
 
     def make_shape(kind: str, cx: float, cy: float) -> dict[str, float | str]:
         if kind == "square":
@@ -222,6 +246,85 @@ def main() -> None:
         command=lambda: center_on_shapes(),
     )
     center_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
+
+    def hide_ghost() -> None:
+        nonlocal ghost_win
+        if ghost_win is not None:
+            try:
+                ghost_win.destroy()
+            except tk.TclError:
+                pass
+            ghost_win = None
+
+    def draw_ghost_preview(c: tk.Canvas, kind: str, cx: int, cy: int) -> None:
+        ol = "#1e293b"
+        ow = 2
+        if kind == "square":
+            h = 22
+            c.create_rectangle(
+                cx - h,
+                cy - h,
+                cx + h,
+                cy + h,
+                fill=COL_SQUARE,
+                outline=ol,
+                width=ow,
+            )
+        elif kind == "rect":
+            c.create_rectangle(
+                cx - 28,
+                cy - 14,
+                cx + 28,
+                cy + 14,
+                fill=COL_RECT,
+                outline=ol,
+                width=ow,
+            )
+        else:
+            c.create_polygon(
+                cx,
+                cy - 24,
+                cx - 26,
+                cy + 18,
+                cx + 26,
+                cy + 18,
+                fill=COL_TRI,
+                outline=ol,
+                width=ow,
+            )
+
+    def show_ghost(kind: str) -> None:
+        nonlocal ghost_win
+        hide_ghost()
+        ghost_win = tk.Toplevel(root)
+        ghost_win.overrideredirect(True)
+        ghost_win.attributes("-topmost", True)
+        ghost_canvas_bg = TRANSP_GHOST
+        try:
+            ghost_win.attributes("-transparentcolor", TRANSP_GHOST)
+        except tk.TclError:
+            ghost_canvas_bg = "#ffffff"
+        gc = tk.Canvas(
+            ghost_win,
+            width=GHOST_WH,
+            height=GHOST_WH,
+            bg=ghost_canvas_bg,
+            highlightthickness=0,
+        )
+        gc.pack()
+        draw_ghost_preview(gc, kind, GHOST_WH // 2, GHOST_WH // 2)
+        rx, ry = root.winfo_pointerxy()
+        ghost_win.geometry(
+            f"{GHOST_WH}x{GHOST_WH}+{rx - GHOST_WH // 2}+{ry - GHOST_WH // 2}"
+        )
+
+    def palette_motion(_event: tk.Event | None = None) -> None:
+        if palette_drag_kind is None or ghost_win is None:
+            return
+        rx, ry = root.winfo_pointerxy()
+        ghost_win.geometry(
+            f"{GHOST_WH}x{GHOST_WH}+{rx - GHOST_WH // 2}+{ry - GHOST_WH // 2}"
+        )
 
     def screen_to_world(sx: int, sy: int) -> tuple[float, float]:
         return scroll_x + float(sx) / zoom, scroll_y + float(sy) / zoom
@@ -339,11 +442,17 @@ def main() -> None:
     def palette_press(kind: str) -> None:
         nonlocal palette_drag_kind
         palette_drag_kind = kind
-        root.bind("<ButtonRelease-1>", finish_palette_drop)
+        show_ghost(kind)
+        root.bind_all("<B1-Motion>", palette_motion)
+        root.bind_all("<ButtonRelease-1>", finish_palette_drop)
 
     def finish_palette_drop(_event: tk.Event | None = None) -> None:
         nonlocal palette_drag_kind
-        root.unbind("<ButtonRelease-1>")
+        if palette_drag_kind is None:
+            return
+        root.unbind_all("<B1-Motion>")
+        root.unbind_all("<ButtonRelease-1>")
+        hide_ghost()
         k = palette_drag_kind
         palette_drag_kind = None
         if k is None:
@@ -451,19 +560,55 @@ def main() -> None:
         nonlocal palette_drag_kind
         if palette_drag_kind is None:
             return
+        root.unbind_all("<B1-Motion>")
+        root.unbind_all("<ButtonRelease-1>")
         palette_drag_kind = None
-        root.unbind("<ButtonRelease-1>")
+        hide_ghost()
 
-    def make_palette_row(label: str, kind: str, draw_fn) -> None:
-        row = tk.Frame(panel, bg="#e4e4e7")
-        row.pack(fill=tk.X, padx=10, pady=6)
-        cv = tk.Canvas(row, width=72, height=72, bg="#fafafa", highlightthickness=1, highlightbackground="#d4d4d8")
-        cv.pack(side=tk.LEFT)
+    def make_palette_row(label: str, subtitle: str, kind: str, draw_fn) -> None:
+        row = tk.Frame(card_body, bg=card_bg)
+        row.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        preview = tk.Frame(
+            row,
+            bg="#f8fafc",
+            highlightthickness=1,
+            highlightbackground=border_muted,
+            highlightcolor=border_muted,
+        )
+        preview.pack(side=tk.LEFT)
+        cv = tk.Canvas(
+            preview,
+            width=72,
+            height=72,
+            bg="#f8fafc",
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        cv.pack(padx=6, pady=6)
         draw_fn(cv, 36, 36)
         cv.bind("<ButtonPress-1>", lambda _e, k=kind: palette_press(k))
-        tk.Label(row, text=label, bg="#e4e4e7", fg="#27272a", font=("Segoe UI", 10)).pack(
-            side=tk.LEFT, padx=(10, 0)
-        )
+
+        txt = tk.Frame(row, bg=card_bg)
+        txt.pack(side=tk.LEFT, padx=(12, 0), fill=tk.Y)
+        tk.Label(
+            txt,
+            text=label,
+            bg=card_bg,
+            fg=text_primary,
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+        ).pack(anchor="nw")
+        tk.Label(
+            txt,
+            text=subtitle,
+            bg=card_bg,
+            fg=text_muted,
+            font=("Segoe UI", 8),
+            anchor="w",
+            wraplength=panel_w - 140,
+            justify=tk.LEFT,
+        ).pack(anchor="nw")
 
     def draw_prev_square(c: tk.Canvas, cx: int, cy: int) -> None:
         h = 22
@@ -485,9 +630,9 @@ def main() -> None:
             width=2,
         )
 
-    make_palette_row("Kare", "square", draw_prev_square)
-    make_palette_row("Dikdörtgen", "rect", draw_prev_rect)
-    make_palette_row("Üçgen", "triangle", draw_prev_tri)
+    make_palette_row("Kare", "Eş kenarlı dörtgen", "square", draw_prev_square)
+    make_palette_row("Dikdörtgen", "Geniş dikdörtgen", "rect", draw_prev_rect)
+    make_palette_row("Üçgen", "Üç köşeli şekil", "triangle", draw_prev_tri)
 
     canvas.bind("<Configure>", on_resize)
     canvas.bind("<Button-1>", on_canvas_left_down)
